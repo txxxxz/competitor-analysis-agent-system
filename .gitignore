@@ -1,0 +1,42 @@
+# Local environment and API keys
+.env
+.env.local
+.env.*.local
+backend/.env
+backend/.env.local
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+*.key
+*.pem
+*.secret
+secrets/
+
+# Local agent/tooling workspace state
+.agents/
+.codex/
+
+# Local reference/process materials not meant for repository upload
+cheatsheet/
+项目要求.pdf
+V1.0-AI驱动的竞品分析系统PRD.pdf
+V1.2-AI驱动竞品分析Agent协作系统PRD.pdf
+V1.2-AI驱动竞品分析Agent协作系统PRD.md
+V1.2-AI驱动竞品分析Agent协作系统*PRD*.pdf
+V1.2-AI驱动竞品分析Agent协作系统*PRD*.md
+V1.2-PRD修订建议.md
+V1.2-MVP闭环实施规划.md
+V1.2-MV*闭环实施规划.md
+task_plan.md
+findings.md
+demo-product-audit.md
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/data/
+data/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+.DS_Store
