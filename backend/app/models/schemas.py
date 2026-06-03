@@ -17,8 +17,10 @@ def now_iso() -> str:
 
 Domain = Literal["general_product", "saas", "ai_tools"]
 Strictness = Literal["low", "standard", "high"]
-ClaimStatus = Literal["passed", "uncertain", "blocked"]
-TicketStatus = Literal["open", "resolved", "dismissed"]
+ClaimStatus = Literal["passed", "uncertain", "blocked", "pending", "unsupported", "contradicted", "stale", "downgraded"]
+TicketStatus = Literal["open", "accepted", "rerun_started", "resolved", "dismissed", "blocked"]
+EvidenceStatus = Literal["active", "excluded", "stale"]
+ReportStatus = Literal["draft", "reviewing", "blocked", "stale", "passed"]
 
 
 class TaskConfig(BaseModel):
@@ -32,10 +34,86 @@ class TaskConfig(BaseModel):
     notes: str = ""
 
 
+def _normalized_name(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def validate_task_config_fields(config: Any) -> list[dict[str, str]]:
+    errors: list[dict[str, str]] = []
+    target = str(getattr(config, "target_product", "") or "").strip()
+    competitors = [str(item).strip() for item in getattr(config, "competitors", []) if str(item).strip()]
+    goals = [str(item).strip() for item in getattr(config, "analysis_goals", []) if str(item).strip()]
+
+    if not target:
+        errors.append(
+            {
+                "field": "target_product",
+                "message": "Target product is required.",
+                "code": "TARGET_REQUIRED",
+            }
+        )
+
+    if not competitors:
+        errors.append(
+            {
+                "field": "competitors",
+                "message": "At least one competitor is required.",
+                "code": "COMPETITORS_REQUIRED",
+            }
+        )
+    elif len(competitors) > 5:
+        errors.append(
+            {
+                "field": "competitors",
+                "message": "MVP supports at most 5 competitors.",
+                "code": "TOO_MANY_COMPETITORS",
+            }
+        )
+
+    target_key = _normalized_name(target)
+    competitor_keys = [_normalized_name(item) for item in competitors]
+    if target_key and target_key in competitor_keys:
+        errors.append(
+            {
+                "field": "competitors",
+                "message": "Target product cannot appear in competitors.",
+                "code": "TARGET_IN_COMPETITORS",
+            }
+        )
+
+    if len(set(competitor_keys)) != len(competitor_keys):
+        errors.append(
+            {
+                "field": "competitors",
+                "message": "Competitors must be unique after normalization.",
+                "code": "DUPLICATE_COMPETITORS",
+            }
+        )
+
+    if not goals:
+        errors.append(
+            {
+                "field": "analysis_goals",
+                "message": "At least one analysis goal is required.",
+                "code": "GOALS_REQUIRED",
+            }
+        )
+    elif len(goals) > 8:
+        errors.append(
+            {
+                "field": "analysis_goals",
+                "message": "MVP supports at most 8 analysis goals.",
+                "code": "TOO_MANY_GOALS",
+            }
+        )
+
+    return errors
+
+
 class Task(BaseModel):
     task_id: str = Field(default_factory=lambda: new_id("task"))
     config: TaskConfig
-    status: Literal["created", "running", "completed", "failed"] = "created"
+    status: Literal["created", "running", "completed", "failed", "blocked", "cancelled"] = "created"
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
@@ -85,6 +163,12 @@ class ToolCall(BaseModel):
     status: Literal["success", "failed", "skipped"] = "success"
     retrieved_at: str = Field(default_factory=now_iso)
     results_summary: str = ""
+    input_summary: str = ""
+    output_summary: str = ""
+    token_count: int | None = None
+    latency_ms: int | None = None
+    provider_request_id: str = ""
+    provider_mode: str = ""
 
 
 class Source(BaseModel):
@@ -111,6 +195,8 @@ class Evidence(BaseModel):
     quote_or_locator: str
     confidence: Literal["high", "medium", "low"] = "medium"
     risk: str = ""
+    status: EvidenceStatus = "active"
+    excluded_reason: str = ""
 
 
 class Claim(BaseModel):
@@ -131,16 +217,22 @@ class ReviewTicket(BaseModel):
     task_id: str
     reviewer: str
     status: TicketStatus = "open"
+    source_node: str = ""
     target_node: str
     reason: str
     required_action: str
-    severity: Literal["high", "medium", "low"] = "medium"
+    severity: Literal["critical", "high", "medium", "low"] = "medium"
+    affected_artifacts: list[str] = Field(default_factory=list)
+    rerun_count: int = 0
+    max_reruns: int = 2
     product: str = ""
     missing_evidence_type: str = ""
     preferred_source_type: str = "official"
     source_query_hint: str = ""
     resolution_note: str = ""
+    resolution_summary: str = ""
     created_at: str = Field(default_factory=now_iso)
+    resolved_at: str = ""
 
 
 class AgentTraceEvent(BaseModel):
@@ -152,7 +244,71 @@ class AgentTraceEvent(BaseModel):
     summary: str
     input_summary: str = ""
     output_summary: str = ""
+    prompt_name: str = ""
+    prompt: str = ""
+    input_payload: dict[str, Any] = Field(default_factory=dict)
+    output_payload: dict[str, Any] = Field(default_factory=dict)
+    token_count: int | None = None
+    latency_ms: int | None = None
+    provider: str = ""
+    provider_request_id: str = ""
     related_ids: list[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=now_iso)
+
+
+class FeatureTreeNode(BaseModel):
+    name: str
+    description: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
+    children: list["FeatureTreeNode"] = Field(default_factory=list)
+
+
+class FeatureTree(BaseModel):
+    root: FeatureTreeNode
+    coverage_note: str = ""
+
+
+class PricingPlan(BaseModel):
+    product: str
+    model: str
+    tiers: list[str] = Field(default_factory=list)
+    monetization_signal: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "medium"
+    risk: str = ""
+
+
+class PricingModel(BaseModel):
+    plans: list[PricingPlan] = Field(default_factory=list)
+    comparison_summary: str = ""
+
+
+class UserPersona(BaseModel):
+    persona_id: str = Field(default_factory=lambda: new_id("persona"))
+    name: str
+    segment: str
+    jobs_to_be_done: list[str] = Field(default_factory=list)
+    pains: list[str] = Field(default_factory=list)
+    decision_criteria: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class SwotAnalysis(BaseModel):
+    strengths: list[str] = Field(default_factory=list)
+    weaknesses: list[str] = Field(default_factory=list)
+    opportunities: list[str] = Field(default_factory=list)
+    threats: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ReportSection(BaseModel):
+    section_id: str = Field(default_factory=lambda: new_id("rs"))
+    section_key: str
+    title: str
+    markdown: str
+    status: ReportStatus = "passed"
+    claim_ids: list[str] = Field(default_factory=list)
+    sort_order: int = 0
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -161,6 +317,16 @@ class Report(BaseModel):
     task_id: str
     title: str
     markdown: str
+    status: ReportStatus = "passed"
+    sections: list[ReportSection] = Field(default_factory=list)
+    claim_count: int = 0
+    unsupported_claim_count: int = 0
+    stale_claim_count: int = 0
+    evidence_coverage_rate: float = 0
+    feature_tree: FeatureTree | None = None
+    pricing_model: PricingModel | None = None
+    user_personas: list[UserPersona] = Field(default_factory=list)
+    swot: SwotAnalysis | None = None
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -169,12 +335,16 @@ class TrustSummary(BaseModel):
     official_source_ratio: float = 0
     blocked_claim_count: int = 0
     uncertain_claim_count: int = 0
+    downgraded_claim_count: int = 0
     unresolved_ticket_count: int = 0
     passed_claim_count: int = 0
     total_claim_count: int = 0
     total_source_count: int = 0
     total_evidence_count: int = 0
     fixture_mode: bool = True
+    provider_mode_label: str = "Demo fixture run"
+    search_mode: str = "mock"
+    llm_mode: str = "mock"
     summary: str = ""
 
 

@@ -4,12 +4,18 @@
 
 后端：
 
+推荐直接使用本机 `dev` conda 环境；它已经包含后端依赖，避免重新创建 `.venv` 时因为 PyPI SSL/网络失败卡住。
+
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+conda activate dev
 uvicorn app.main:app --reload --port 8000
+```
+
+如果新终端已经自动进入 `(dev)`，可以省略 `conda activate dev`。依赖检查：
+
+```bash
+python -c "import fastapi, langgraph; print('backend deps ok')"
 ```
 
 前端：

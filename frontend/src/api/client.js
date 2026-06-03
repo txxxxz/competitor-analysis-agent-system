@@ -6,10 +6,26 @@ async function request(path, options = {}) {
     ...options,
   });
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `Request failed: ${response.status}`);
+    throw new Error(await formatError(response));
   }
   return response.json();
+}
+
+async function formatError(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    return (await response.text()) || `Request failed: ${response.status}`;
+  }
+  const body = await response.json();
+  if (Array.isArray(body.detail)) {
+    return body.detail.map((item) => item.message || item.msg || JSON.stringify(item)).join(" ");
+  }
+  if (Array.isArray(body.errors)) {
+    return body.errors.map((item) => `${item.field}: ${item.message}`).join(" ");
+  }
+  if (body.detail) return body.detail;
+  if (body.title) return body.title;
+  return `Request failed: ${response.status}`;
 }
 
 export function getDemoTasks() {
@@ -23,10 +39,125 @@ export function createTask(config) {
   });
 }
 
+export async function createTaskV1(config) {
+  const envelope = await request("/api/v1/tasks", {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+  return envelope.data;
+}
+
 export function runTask(taskId) {
   return request(`/api/tasks/${taskId}/run`, { method: "POST" });
 }
 
+export function streamTaskRun(taskId, handlers = {}) {
+  return new Promise((resolve, reject) => {
+    const events = new EventSource(`${API_BASE}/api/v1/tasks/${taskId}/run/stream`);
+    let finalResult = null;
+    events.addEventListener("workflow_started", (event) => {
+      handlers.onStart?.(JSON.parse(event.data));
+    });
+    events.addEventListener("state", (event) => {
+      handlers.onState?.(JSON.parse(event.data));
+    });
+    events.addEventListener("trace", (event) => {
+      handlers.onTrace?.(JSON.parse(event.data));
+    });
+    events.addEventListener("result", (event) => {
+      finalResult = JSON.parse(event.data);
+      handlers.onResult?.(finalResult);
+    });
+    events.addEventListener("workflow_completed", (event) => {
+      handlers.onDone?.(JSON.parse(event.data));
+      events.close();
+      resolve(finalResult);
+    });
+    events.addEventListener("workflow_error", (event) => {
+      events.close();
+      const message = event.data ? JSON.parse(event.data).message : "Streaming run failed.";
+      reject(new Error(message));
+    });
+    events.onerror = () => {
+      events.close();
+      reject(new Error("Streaming run connection failed."));
+    };
+  });
+}
+
 export function getTasks() {
   return request("/api/tasks");
+}
+
+export function getTask(taskId) {
+  return request(`/api/tasks/${taskId}`);
+}
+
+export async function excludeEvidence(evidenceId, reason) {
+  const envelope = await request(`/api/v1/evidence/${evidenceId}/exclude`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+  return envelope.data;
+}
+
+export async function restoreEvidence(evidenceId) {
+  const envelope = await request(`/api/v1/evidence/${evidenceId}/restore`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  return envelope.data;
+}
+
+export async function acceptReviewTicket(ticketId, note = "") {
+  const envelope = await request(`/api/v1/review-tickets/${ticketId}/accept`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
+  });
+  return envelope.data;
+}
+
+export async function rerunReviewTicket(ticketId) {
+  const envelope = await request(`/api/v1/review-tickets/${ticketId}/rerun`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  return envelope.data;
+}
+
+export async function dismissReviewTicket(ticketId, reason = "") {
+  const envelope = await request(`/api/v1/review-tickets/${ticketId}/dismiss`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+  return envelope.data;
+}
+
+export async function resolveReviewTicket(ticketId, resolutionSummary = "") {
+  const envelope = await request(`/api/v1/review-tickets/${ticketId}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ resolution_summary: resolutionSummary }),
+  });
+  return envelope.data;
+}
+
+export async function markReviewTicketUnavailable(ticketId, reason = "") {
+  const envelope = await request(`/api/v1/review-tickets/${ticketId}/mark-unavailable`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+  return envelope.data;
+}
+
+export async function downgradeReviewTicket(ticketId, reason = "") {
+  const envelope = await request(`/api/v1/review-tickets/${ticketId}/downgrade`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+  return envelope.data;
+}
+
+export async function exportReport(taskId, allowDraft = false) {
+  const envelope = await request(`/api/v1/tasks/${taskId}/report/export?format=markdown&allow_draft=${allowDraft}`);
+  return envelope.data;
 }

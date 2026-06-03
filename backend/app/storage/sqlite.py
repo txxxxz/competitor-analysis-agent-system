@@ -91,3 +91,21 @@ class SQLiteStore:
                     )
                 )
         return tasks
+
+    def find_result_by_evidence_id(self, evidence_id: str) -> WorkflowResult | None:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT result_json FROM tasks WHERE result_json IS NOT NULL ORDER BY updated_at DESC").fetchall()
+        for row in rows:
+            result = WorkflowResult.model_validate_json(row["result_json"])
+            if any(item.evidence_id == evidence_id for item in result.evidence):
+                return result
+        return None
+
+    def find_result_by_ticket_id(self, ticket_id: str) -> WorkflowResult | None:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT result_json FROM tasks WHERE result_json IS NOT NULL ORDER BY updated_at DESC").fetchall()
+        for row in rows:
+            result = WorkflowResult.model_validate_json(row["result_json"])
+            if any(item.ticket_id == ticket_id for item in result.review_tickets):
+                return result
+        return None

@@ -6,6 +6,8 @@ from app.models.schemas import SearchQuery
 
 
 class SearchProvider(ABC):
+    provider_name = "SearchProvider"
+
     @abstractmethod
     def search(self, task_id: str, query: SearchQuery, supplement: bool = False) -> list[dict]:
         raise NotImplementedError

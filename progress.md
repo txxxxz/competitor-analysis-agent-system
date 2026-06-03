@@ -22,18 +22,24 @@
 10. 前端展示 New Analysis 基础表单、Provider Mode、模板规则、Search Plan、Comparison Matrix、Evidence source detail、Final Report。
 11. README、架构文档、部署文档和演示脚本。
 12. 后端测试和前端生产构建已通过。
+13. `.env` 驱动的 provider factory 已实现，可切换 Mock / AnySearch / Seed。
+14. AnySearchProvider 已接入真实 API；空结果和请求失败可回退 fixture，并在 trace/tool call 中记录。
+15. SeedLLMProvider adapter 已实现，后续可接入复杂生成节点。
+16. Review Ticket 用户操作、Evidence exclude / restore、报告 stale draft 导出已实现。
+17. `evidence_strictness` 已接入 Evidence Reviewer：low / standard / high 会影响 claim inclusion、downgrade 和 Trust Summary。
+18. SSE 实时 Agent Trace 已实现：`/api/v1/tasks/{task_id}/run/stream` 输出 workflow / trace / state / result 事件，前端运行时显示 live stream 摘要。
+19. Review Ticket 真正局部重跑已实现：rerun 会执行 Research / Source / Evidence / Analyst / Reviewer / Writer 子流程并返回新的 workflow_result。
+20. Review Ticket 更多处置动作已实现：`mark-unavailable` 会标记相关 claim 为 unsupported，`downgrade` 会标记相关 claim 为 downgraded，并重写报告。
+21. Evidence & Claims 已支持搜索、状态筛选、产品筛选、claim type 筛选、排序、展开/收起和空筛选状态。
+22. Recent Runs 已支持展示最近任务、刷新列表和从已保存任务恢复完整 WorkflowResult。
+23. New Analysis 的竞品输入已升级为 chip 输入：支持 Enter / 逗号 / 粘贴列表添加、移除、最多 5 个、目标产品冲突提示和 domain quick-add 候选。
+24. Analyst 已深度接入 LLMProvider：Claim 生成后会调用 `complete_structured("claim_enrichment", payload)`，只接受绑定已有 active evidence_id 的补充 claim。
+25. Writer 已深度接入 LLMProvider：报告生成会调用 `complete_structured("report_enhancement", payload)`，Seed 可返回结构化摘要 / 建议 / caveats；请求失败或 mock 模式保留 deterministic fallback。
+26. Critic 已深度接入 LLMProvider：确定性 coverage gate 之后会调用 `complete_structured("review_ticket_suggestions", payload)`，只接受 scope 内产品和去重后的结构化 ReviewTicket。
 
 尚未完成：
 
-1. AnySearchSkillProvider。
-2. SeedLLMProvider。
-3. `.env` 驱动的 provider factory：mock / real / fallback 运行时切换。
-4. SSE 实时 Agent Trace。
-5. Review Ticket 用户操作：接受补采、标记不可得、降级结论、局部重跑。
-6. Evidence & Claims 过滤、排序、用户 exclude 操作。
-7. Recent Runs 任务历史入口。
-8. 竞品 chip 输入、推荐候选和更强校验。
-9. `evidence_strictness` 对 claim inclusion / review 阈值的真实影响。
+1. 暂无 V1.2 MVP 阻断项；后续可继续增强成本控制、更多真实 LLM prompt 和外部部署硬化。
 
 ## 当前工程判断
 
@@ -44,26 +50,12 @@
 
 ## 下一步优先级
 
-P0：
-
-1. 实现 provider factory，读取 `.env` 并选择 Mock / AnySearch / Seed。
-2. 接入 AnySearchSkillProvider，并保留 fixture fallback。
-3. 让 ToolCall 记录 provider、status、fallback reason。
-4. 让 `evidence_strictness` 真正影响 Claim 和 Evidence Reviewer。
-
-P1：
-
-1. Evidence & Claims 增加筛选、排序、展开/收起和用户排除操作。
-2. 增加 Recent Runs 历史任务入口。
-3. 增加 Review Ticket 用户操作和局部重跑。
-4. 将 New Analysis 的竞品输入升级为 chip 输入。
-
 P2：
 
 1. 接入 SeedLLMProvider。
 2. 为 Planner / Analyst / Critic / Writer 设计结构化 JSON prompt。
 3. 增加 JSON 修复、失败降级和成本控制。
-4. 增加 SSE 实时执行过程。
+4. 增加更完整的成本控制和 tracing metadata。
 
 ## 验证记录
 
@@ -71,10 +63,10 @@ P2：
 
 ```bash
 cd backend
-PYTHONPATH=. pytest
+conda run -n dev python -m pytest tests -q
 ```
 
-结果：2 passed。
+结果：21 passed，1 warning。
 
 ```bash
 cd frontend
@@ -82,6 +74,23 @@ npm run build
 ```
 
 结果：构建通过。
+
+Browser smoke：
+
+1. `http://127.0.0.1:5173/` 页面加载正常。
+2. 点击 `Run analysis` 后，前端显示 `Live stream captured 16 trace event(s).`
+3. 最终结果页、Agent Trace 和 Review Ticket 区正常渲染，console 无 error / warn。
+4. Review Ticket `Downgrade` 动作会刷新 workflow_result，ticket、claim 和 report 显示降级原因。
+5. Recent Runs 可加载最近完成任务，恢复后显示 9 sources / 9 evidence / 11 claims / 1 ticket，并高亮当前任务。
+6. Evidence & Claims 可按 `Downgraded` 筛选到 `1 of 11 claims`，展开后显示 TRAE pricing 证据详情。
+7. Evidence & Claims 空搜索显示 `0 of 11 claims` 和 `No claims match the current filters.`
+8. 刷新后 console 只有 React DevTools info；favicon 404 已通过 `frontend/public/favicon.svg` 消除。
+9. Chip 输入可移除 TRAE、quick-add Codeium；运行后 Recent Runs 顶部显示 `Cursor / GitHub Copilot, Windsurf, Codeium`，Trace 出现 `Codeium lacks official pricing evidence`。
+10. Final Report 显示 `结构化综合摘要`、`结构化建议`、`结构化 Caveats`，验证 Writer 已应用 LLMProvider 结构化增强。
+11. API workflow 返回 `claims=12`，ToolCall 包含 `MockLLMProvider:claim_enrichment` 和 `MockLLMProvider:report_enhancement`。
+12. Browser 恢复该 Recent Run 后显示 12 claims，Trace 出现 `llm_claim_enrichment_applied` 与 `llm_enhancement_applied`。
+13. 单元测试覆盖 Seed-style Critic review ticket suggestions：有效 ticket 加入，无效 scope 外产品被过滤。
+14. Demo 截图已生成：`output/playwright/demo-final-report.png`、`output/playwright/demo-evidence-claims.png`。
 
 Playwright / Chromium：
 

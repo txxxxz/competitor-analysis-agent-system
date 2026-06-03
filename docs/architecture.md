@@ -2,9 +2,9 @@
 
 ## 首个 Demo 范围
 
-当前版本是一个本地可运行、无需 API Key 的 LangGraph demo。它用于验证 V1.2 PRD 的核心流程：结构化任务、模板选择、搜索计划、证据链、Review Ticket、补采回环、Agent Trace 和 Markdown 报告。
+当前版本是一个本地可运行、无需 API Key 的 LangGraph demo。它用于验证 V1.2 PRD 的核心流程：结构化任务、模板选择、搜索计划、证据链、Review Ticket、补采回环、Agent Trace、结构化报告和 Markdown 报告。
 
-它不是生产版，也没有接入真实 AnySearch 或 Seed 大模型。
+它不是生产版；默认运行 Demo fixtures，但已提供 AnySearch 和 Seed 的 live provider adapter，可通过 `.env` 切换并在 trace / trust summary 中显示 demo/live/fallback 边界。
 
 ## 后端
 
@@ -12,6 +12,9 @@
 - LangGraph 执行 Agent workflow。
 - SQLite 保存任务和完整 workflow result。
 - Mock providers 返回确定性的 demo fixtures。
+- AnySearchProvider / SeedLLMProvider 通过 provider factory 接入 live path。
+- Report schema 输出 FeatureTree、PricingModel、UserPersona、SWOT。
+- AgentTraceEvent 记录 prompt、input、output、token、latency、provider、request id 等审计字段。
 
 主要文件：
 
@@ -30,16 +33,13 @@
   - Demo task launcher。
   - Task Config。
   - Agent Trace。
+  - Search Plan。
+  - Comparison Matrix。
   - Evidence & Claims。
+  - Review Tickets。
+  - Trust Summary。
   - Final Report。
-
-下一阶段建议补充：
-
-- New Analysis 结构化表单。
-- Search Plan 审查视图。
-- Comparison Matrix。
-- Trust Summary。
-- Recent Runs。
+  - Recent Runs。
 
 ## Provider 边界
 
@@ -48,7 +48,7 @@
 ```text
 SearchProvider
   -> MockSearchProvider
-  -> AnySearchSkillProvider
+  -> AnySearchProvider
 
 LLMProvider
   -> MockLLMProvider
@@ -60,10 +60,12 @@ LLMProvider
 - `SearchProvider` 接口已存在。
 - `LLMProvider` 接口已存在。
 - `MockSearchProvider` 已接入 workflow。
-- `MockLLMProvider` 已存在，但尚未深度参与复杂生成。
-- `AnySearchSkillProvider` 尚未实现。
-- `SeedLLMProvider` 尚未实现。
-- provider factory 和 `.env` 切换尚未实现。
+- `MockLLMProvider` 已接入 Analyst、Critic、Writer 的结构化补强路径。
+- `AnySearchProvider` 已实现，读取 `.env` 中的 API Key / base URL / max results。
+- `SeedLLMProvider` 已实现 adapter，并可通过 `.env` 切换到 live LLM path。
+- provider factory 已实现 mock / real / fallback 运行时切换。
+- AnySearch 空结果或请求失败会按配置回退到 fixtures，并写入 trace / tool call。
+- Trust Summary 暴露 `provider_mode_label`、`search_mode`、`llm_mode`，避免 Demo fixture run 与 Live provider run 混淆。
 
 ## Agent 实现方式
 
@@ -94,7 +96,9 @@ Critic Agent
 -> Research Agent 补采
 -> Source / Evidence 更新
 -> Analyst Agent 重算
+-> Evidence Reviewer 重新门禁
+-> Trust Summary 更新
 -> Writer Agent 生成报告
 ```
 
-下一阶段应把 ReviewTicket 从文本原因升级为结构化协议，使 Research Agent 能基于 `product`、`missing_evidence_type` 和 `preferred_source_type` 动态生成补采 query。
+ReviewTicket 已包含 `product`、`missing_evidence_type`、`preferred_source_type` 和 `source_query_hint`，Research Agent 会基于这些字段生成补采 query。当前触发面包括 pricing、feature、target_user、security、contradiction；后续可继续扩展到更多垂直行业证据类型。
