@@ -1,15 +1,44 @@
 # Local environment and API keys
 .env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 .env.local
 .env.*.local
 backend/.env
+backend/.env.*
+!backend/.env.example
+!backend/.env.sample
+!backend/.env.template
 backend/.env.local
 frontend/.env
+frontend/.env.*
+!frontend/.env.example
+!frontend/.env.sample
+!frontend/.env.template
 frontend/.env.local
 frontend/.env.*.local
 *.key
 *.pem
 *.secret
+*.secrets
+*.credentials
+*.credentials.*
+*credential*.json
+*credentials*.json
+*secret*.json
+*secrets*.json
+*api-key*.json
+*apikey*.json
+*token*.json
+service-account*.json
+config/local.*
+config/*.local.*
+backend/config/local.*
+backend/config/*.local.*
+frontend/config/local.*
+frontend/config/*.local.*
 secrets/
 
 # Local agent/tooling workspace state
