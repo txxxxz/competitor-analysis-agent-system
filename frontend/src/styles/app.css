@@ -1785,6 +1785,47 @@ h1 {
   display: block;
 }
 
+.feature-title-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.method-badge {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #51605b;
+  background: #f8fbfa;
+}
+
+.method-badge.browser_walkthrough {
+  border-color: #9ed7c3;
+  color: #116048;
+  background: #e9f8f2;
+}
+
+.method-badge.source_inference {
+  border-color: #d7c99e;
+  color: #78601d;
+  background: #fff8dc;
+}
+
+.method-badge.unverified {
+  border-color: #e0b3b3;
+  color: #8d3636;
+  background: #fff1f1;
+}
+
+.feature-path {
+  color: #236b55;
+}
+
 .feature-children {
   display: grid;
   gap: 2px;

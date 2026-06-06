@@ -85,6 +85,8 @@ const strictnessCopy = {
 const dimensionCopy = {
   positioning: "定位",
   feature: "功能",
+  browser_interaction: "实测路径",
+  comparative_browser_interaction: "实测路径对比",
   agent_capability: "Agent 能力",
   ai_capability: "AI 能力",
   developer_workflow: "开发者工作流",
@@ -98,6 +100,7 @@ const dimensionCopy = {
 const evidenceTypeCopy = {
   pricing: "定价",
   feature: "功能",
+  browser_interaction: "浏览器实测路径",
   target_user: "目标用户",
   target_users: "目标用户",
   security: "安全与隐私",
@@ -105,12 +108,15 @@ const evidenceTypeCopy = {
   positioning: "定位",
   official_pricing_page: "官方定价页",
   official_docs: "官方文档",
+  official_browser_walkthrough: "官方页面实测",
+  browser_walkthrough: "浏览器实测",
 };
 
 const sourcePreferenceCopy = {
   official: "官方来源",
   official_docs: "官方文档",
   official_pricing_page: "官方定价页",
+  browser_walkthrough: "浏览器实测",
   official_or_independent: "官方或独立来源",
   "official documentation and industry reports": "官方文档与行业报告",
   "privacy policies and security audits": "隐私政策与安全审计",
@@ -123,6 +129,7 @@ const nodeCopy = {
   EvidenceConsistencyReviewer: "证据一致性复核",
   WriterAgent: "报告生成 Agent",
   AnalystAgent: "分析 Agent",
+  InteractionAgent: "交互实测 Agent",
   review_ticket: "复核工单",
 };
 
@@ -1003,6 +1010,7 @@ function WorkflowStepper({ trace = [], running = false }) {
     ["research", "检索"],
     ["source_normalizer", "来源"],
     ["evidence_extractor", "证据"],
+    ["interaction", "实测"],
     ["analyst", "结论"],
     ["critic", "复核"],
     ["evidence_reviewer", "门禁"],
@@ -1040,6 +1048,7 @@ function TrustSummary({ summary }) {
   const items = [
     ["证据绑定率", percent(summary.claim_evidence_binding_rate)],
     ["官方来源占比", percent(summary.official_source_ratio)],
+    ["实测路径", `${summary.browser_interaction_count || 0} 条`],
     ["已通过结论", `${summary.passed_claim_count}/${summary.total_claim_count}`],
     ["未解决工单", summary.unresolved_ticket_count],
   ];
@@ -1783,7 +1792,7 @@ function FeatureEvidenceMapPanel({ tree }) {
       <div className="feature-tree-head">
         <div>
           <h3>功能证据地图</h3>
-          <p className="note">这里是基于证据归纳出的功能覆盖地图，不等同于 Playwright 可点击的真实网站功能路径。</p>
+          <p className="note">实测节点来自明确的浏览器点击路径；文档/搜索推断节点只能作为辅助研究线索。</p>
         </div>
         <div className="feature-tree-actions">
           <button type="button" onClick={() => setExpandedKeys(new Set(allKeys))}>全部展开</button>
@@ -1827,8 +1836,12 @@ function FeatureNode({ node, path, query, expandedKeys, visibleKeys, onToggle })
           {hasChildren ? (expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />) : null}
         </button>
         <div>
-          <strong>{translateFeatureNodeText(node.name)}</strong>
+          <div className="feature-title-line">
+            <strong>{translateFeatureNodeText(node.name)}</strong>
+            {node.verification_method && <span className={`method-badge ${node.verification_method}`}>{translateVerificationMethod(node.verification_method)}</span>}
+          </div>
           <span>{translateStructuredText(node.description)}</span>
+          {node.interaction_path?.length > 0 && <small className="feature-path">路径：{node.interaction_path.map(translateStructuredText).join(" > ")}</small>}
           {node.evidence_ids?.length > 0 && <small>证据：{node.evidence_ids.join(", ")}</small>}
         </div>
       </div>
@@ -1876,10 +1889,21 @@ function featureNodeMatches(node, query) {
   return [
     node.name,
     node.description,
+    node.verification_method,
+    ...(node.interaction_path || []),
     translateFeatureNodeText(node.name),
     translateStructuredText(node.description),
     ...(node.evidence_ids || []),
   ].join(" ").toLowerCase().includes(query);
+}
+
+function translateVerificationMethod(value) {
+  return {
+    browser_walkthrough: "实测",
+    source_inference: "文档推断",
+    unverified: "未实测",
+    mixed: "混合",
+  }[value] || value;
 }
 
 function translateConfidence(value) {
