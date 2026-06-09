@@ -62,6 +62,16 @@ AI_TOOLS_FIXTURES = {
             "summary": "Cursor publishes security and privacy controls for team or enterprise adoption.",
             "locator": "Security page fixture",
         },
+        {
+            "title": "Independent developer review of Cursor workflows",
+            "url": "https://example.com/reviews/cursor-ai-editor",
+            "source_type": "third_party_relevant",
+            "product": "Cursor",
+            "content": "A third-party developer review describes Cursor as strong for in-editor iteration, while noting that teams still compare pricing, privacy controls, and workflow fit before rollout.",
+            "evidence_type": "third_party_context",
+            "summary": "Independent feedback frames Cursor as strong for in-editor iteration, with pricing and privacy checks still influencing team adoption.",
+            "locator": "Third-party review fixture",
+        },
     ],
     "GitHub Copilot": [
         {
@@ -116,6 +126,16 @@ AI_TOOLS_FIXTURES = {
             "summary": "GitHub Copilot surfaces enterprise trust and security controls.",
             "locator": "Trust fixture",
         },
+        {
+            "title": "Developer community discussion of GitHub Copilot",
+            "url": "https://example.com/community/github-copilot-developer-feedback",
+            "source_type": "third_party_relevant",
+            "product": "GitHub Copilot",
+            "content": "Developer community feedback often treats GitHub Copilot as a familiar default because it fits existing IDE and GitHub workflows, but adoption decisions still depend on plan limits and organization controls.",
+            "evidence_type": "third_party_context",
+            "summary": "Third-party developer feedback treats GitHub Copilot as a familiar workflow default, while plan limits and admin controls remain adoption checks.",
+            "locator": "Community feedback fixture",
+        },
     ],
     "Windsurf": [
         {
@@ -160,6 +180,16 @@ AI_TOOLS_FIXTURES = {
             "summary": "Windsurf targets developers and teams seeking AI-assisted coding workflows.",
             "locator": "Teams fixture",
         },
+        {
+            "title": "Windsurf developer experience review",
+            "url": "https://example.com/reviews/windsurf-cascade-workflow",
+            "source_type": "third_party_relevant",
+            "product": "Windsurf",
+            "content": "A third-party workflow review highlights Windsurf's Cascade experience and codebase context as differentiators, while comparing it against established IDE assistant habits.",
+            "evidence_type": "third_party_context",
+            "summary": "Independent workflow feedback highlights Windsurf's Cascade experience and codebase context, but compares adoption against existing IDE-assistant habits.",
+            "locator": "Third-party workflow review fixture",
+        },
     ],
     "TRAE": [
         {
@@ -183,7 +213,17 @@ AI_TOOLS_FIXTURES = {
             "locator": "Features fixture",
             "interaction_steps": ["IDE", "AI assistant", "Task prompt", "Generated change", "Review result"],
             "interaction_summary": "TRAE's AI IDE workflow is represented as a path from assistant invocation to generated change review.",
-        }
+        },
+        {
+            "title": "TRAE user feedback roundup",
+            "url": "https://example.com/reviews/trae-ai-ide-feedback",
+            "source_type": "third_party_relevant",
+            "product": "TRAE",
+            "content": "A third-party user feedback roundup describes TRAE as an accessible AI IDE option, but says users need clearer comparisons on ecosystem maturity, pricing, and team controls.",
+            "evidence_type": "third_party_context",
+            "summary": "Third-party feedback sees TRAE as an accessible AI IDE option, with ecosystem maturity, pricing clarity, and team controls still needing validation.",
+            "locator": "Third-party feedback fixture",
+        },
     ],
     "TRAE_SUPPLEMENT": [
         {

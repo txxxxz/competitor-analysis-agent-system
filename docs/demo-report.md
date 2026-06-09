@@ -20,7 +20,7 @@ Sample task:
 Sample user:
 
 - Product manager reviewing AI coding tool competitors
-- Needs evidence-backed positioning, pricing, feature tree, user persona, security risk, and workflow comparison
+- Needs evidence-backed positioning, pricing, User Journey, user persona, security risk, and workflow comparison
 - Must be able to inspect claims, evidence, review tickets, and final report before export
 
 Sample data:
@@ -40,12 +40,12 @@ Sample data:
 
 Evidence:
 
-- Workflow report contains FeatureTree, PricingModel, UserPersona, and SWOT structured objects.
+- Workflow report contains User Journey, PricingModel, UserPersona, and SWOT structured objects.
 - Trust Summary explicitly labels `Demo fixture run` versus `Live provider run` and shows search/LLM modes.
 - Trace events include prompt/input/output summaries plus provider, token, latency, and request-id fields where available.
 - Trace included `llm_claim_enrichment_applied`.
 - Trace included `llm_enhancement_applied`.
-- Final Report showed `功能树 FeatureTree`, `定价模型 PricingModel`, `用户画像 UserPersona`, `SWOT`, `结构化综合摘要`, `结构化建议`, and `结构化 Caveats`.
+- Final Report showed `用户旅程 User Journey`, `定价模型 PricingModel`, `用户画像 UserPersona`, `SWOT`, `结构化综合摘要`, `结构化建议`, and `结构化 Caveats`.
 
 ## Error Path
 

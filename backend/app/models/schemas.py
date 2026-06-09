@@ -21,7 +21,119 @@ ClaimStatus = Literal["passed", "uncertain", "blocked", "pending", "unsupported"
 TicketStatus = Literal["open", "accepted", "rerun_started", "resolved", "dismissed", "blocked"]
 EvidenceStatus = Literal["active", "excluded", "stale"]
 ReportStatus = Literal["draft", "reviewing", "blocked", "stale", "passed"]
+SocialPlatform = Literal["xiaohongshu", "weibo", "douyin"]
 MAX_ANALYSIS_GOAL_WORDS = 1000
+
+
+class SocialPlatformConfig(BaseModel):
+    platform: SocialPlatform
+    enabled: bool = False
+    keywords: list[str] = Field(default_factory=list)
+    sort_by: str = "综合"
+    note_type: str = "不限"
+    publish_time: str = "一周内"
+    max_posts_per_keyword: int = 15
+    fetch_comments: bool = True
+    max_comments_per_post: int = 30
+
+
+class SocialListeningConfig(BaseModel):
+    enabled: bool = False
+    platforms: list[SocialPlatformConfig] = Field(default_factory=list)
+    manual_xhs_summary: str = ""
+    manual_source_urls: list[str] = Field(default_factory=list)
+
+
+class SocialComment(BaseModel):
+    comment_id: str = ""
+    author: str = ""
+    content: str
+    like_count: int = 0
+    sentiment: Literal["positive", "neutral", "negative"] = "neutral"
+
+
+class SocialPost(BaseModel):
+    post_id: str
+    platform: SocialPlatform
+    title: str
+    content: str = ""
+    author: str = ""
+    url: str = ""
+    xsec_token: str = ""
+    like_count: int = 0
+    collect_count: int = 0
+    share_count: int = 0
+    comment_count: int = 0
+    comments: list[SocialComment] = Field(default_factory=list)
+
+
+class SentimentSummary(BaseModel):
+    positive_count: int = 0
+    neutral_count: int = 0
+    negative_count: int = 0
+    overall: Literal["positive", "neutral", "negative", "mixed"] = "neutral"
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class SocialInsightFinding(BaseModel):
+    finding_id: str = Field(default_factory=lambda: new_id("sf"))
+    category: Literal["positive", "pain", "risk", "request", "question", "neutral"] = "neutral"
+    title: str
+    summary: str
+    comment_refs: list[str] = Field(default_factory=list)
+
+
+class SocialInsight(BaseModel):
+    insight_id: str = Field(default_factory=lambda: new_id("si"))
+    platform: SocialPlatform
+    keyword: str = ""
+    summary: str
+    findings: list[SocialInsightFinding] = Field(default_factory=list)
+    themes: list[str] = Field(default_factory=list)
+    pain_points: list[str] = Field(default_factory=list)
+    purchase_signals: list[str] = Field(default_factory=list)
+    churn_or_risk_signals: list[str] = Field(default_factory=list)
+    competitor_mentions: list[str] = Field(default_factory=list)
+    sentiment: SentimentSummary = Field(default_factory=SentimentSummary)
+    post_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    status: Literal["collected", "manual", "login_required", "unavailable"] = "collected"
+    note: str = ""
+
+
+class XhsMcpStatusResponse(BaseModel):
+    connected: bool = False
+    logged_in: bool = False
+    login_required: bool = True
+    message: str = ""
+    mcp_url: str = "http://localhost:18060/mcp"
+
+
+class XhsLoginQrCodeResponse(BaseModel):
+    connected: bool = False
+    login_required: bool = True
+    qrcode_base64: str = ""
+    qr_url: str = ""
+    qr_image_path: str = ""
+    qr_id: str = ""
+    code: str = ""
+    expires_in_seconds: int = 0
+    message: str = ""
+    mcp_url: str = "http://localhost:18060/mcp"
+
+
+class XhsQrCodeStatusRequest(BaseModel):
+    qr_id: str = ""
+    code: str = ""
+
+
+class XhsQrCodeStatusResponse(BaseModel):
+    connected: bool = False
+    logged_in: bool = False
+    login_required: bool = True
+    status: str = ""
+    message: str = ""
+    mcp_url: str = "http://localhost:18060/mcp"
 
 
 class TaskConfig(BaseModel):
@@ -33,6 +145,7 @@ class TaskConfig(BaseModel):
     evidence_strictness: Strictness = "high"
     audience: str = "product team"
     notes: str = ""
+    social_listening: SocialListeningConfig = Field(default_factory=SocialListeningConfig)
 
 
 class AnalysisGoalPolishRequest(BaseModel):
@@ -85,6 +198,124 @@ class CompetitorRecommendationResponse(BaseModel):
     rationale: str = ""
     provider: str = ""
     provider_request_id: str = ""
+
+
+SurveyQuestionType = Literal["screening", "single_choice", "multiple_choice", "likert", "ranking", "open_text"]
+
+
+class SurveyGenerationRequest(BaseModel):
+    product_name: str
+    research_goal: str
+    target_users: str
+    scenario: str = ""
+    question_count: int = 12
+    language: Literal["zh-CN", "en-US"] = "zh-CN"
+
+
+class SurveyQuestion(BaseModel):
+    question_id: str
+    type: SurveyQuestionType
+    text: str
+    options: list[str] = Field(default_factory=list)
+    required: bool = True
+    purpose: str = ""
+
+
+class SurveyGenerationResponse(BaseModel):
+    title: str
+    research_objective: str
+    target_users: str
+    screening_criteria: list[str] = Field(default_factory=list)
+    questions: list[SurveyQuestion] = Field(default_factory=list)
+    analysis_plan: list[str] = Field(default_factory=list)
+    survey_json: dict[str, Any] = Field(default_factory=dict)
+    skill_source: dict[str, str] = Field(default_factory=dict)
+    provider: str = ""
+    provider_request_id: str = ""
+
+
+PMSkillLicense = Literal["MIT", "CC BY-NC-SA 4.0", "unknown"]
+
+
+class PMSkill(BaseModel):
+    skill_id: str
+    name: str
+    description: str = ""
+    intent: str = ""
+    repo_url: str
+    path: str
+    ref: str = "main"
+    license: PMSkillLicense = "unknown"
+    content_hash: str
+    markdown: str
+    source: Literal["default", "user"] = "user"
+    requires_license_ack: bool = False
+    imported_at: str = Field(default_factory=now_iso)
+
+
+class PMSkillAssignment(BaseModel):
+    slot: str
+    skill_id: str = ""
+    enabled: bool = True
+    license_acknowledged: bool = False
+    updated_at: str = Field(default_factory=now_iso)
+
+
+class PMSkillSlot(BaseModel):
+    slot: str
+    title: str
+    description: str = ""
+
+
+class PMSkillCatalogResponse(BaseModel):
+    skills: list[PMSkill] = Field(default_factory=list)
+    slots: list[PMSkillSlot] = Field(default_factory=list)
+    defaults: list[dict[str, Any]] = Field(default_factory=list)
+    assignments: list[PMSkillAssignment] = Field(default_factory=list)
+
+
+class PMSkillImportRequest(BaseModel):
+    github_url: str
+    intent: str = ""
+    license: PMSkillLicense | str = "unknown"
+
+
+class PMSkillSyncResponse(BaseModel):
+    imported: list[PMSkill] = Field(default_factory=list)
+    warnings: list[dict[str, str]] = Field(default_factory=list)
+    assignments: list[PMSkillAssignment] = Field(default_factory=list)
+
+
+class PMSkillAssignmentUpdate(BaseModel):
+    slot: str
+    skill_id: str = ""
+    enabled: bool = True
+    license_acknowledged: bool = False
+
+
+class PMSkillAssignmentsRequest(BaseModel):
+    assignments: list[PMSkillAssignmentUpdate] = Field(default_factory=list)
+
+
+class PMSkillRecommendRequest(BaseModel):
+    top_level_goal: str = ""
+    task_domain: str = ""
+    data_sources: list[str] = Field(default_factory=list)
+
+
+class PMSkillRecommendResponse(BaseModel):
+    recommendations: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SkillPromptContext(BaseModel):
+    slot: str
+    skill_id: str
+    skill_name: str
+    skill_repo: str
+    skill_path: str
+    skill_hash: str
+    license: str = ""
+    prompt: str = ""
 
 
 def _normalized_name(value: str) -> str:
@@ -239,6 +470,11 @@ class ToolCall(BaseModel):
     latency_ms: int | None = None
     provider_request_id: str = ""
     provider_mode: str = ""
+    skill_name: str = ""
+    skill_repo: str = ""
+    skill_path: str = ""
+    skill_hash: str = ""
+    skill_license: str = ""
 
 
 class Source(BaseModel):
@@ -323,6 +559,11 @@ class AgentTraceEvent(BaseModel):
     latency_ms: int | None = None
     provider: str = ""
     provider_request_id: str = ""
+    skill_name: str = ""
+    skill_repo: str = ""
+    skill_path: str = ""
+    skill_hash: str = ""
+    skill_license: str = ""
     related_ids: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=now_iso)
 
@@ -400,6 +641,8 @@ class Report(BaseModel):
     pricing_model: PricingModel | None = None
     user_personas: list[UserPersona] = Field(default_factory=list)
     swot: SwotAnalysis | None = None
+    social_insights: list[SocialInsight] = Field(default_factory=list)
+    skill_assignments: list[dict[str, str]] = Field(default_factory=list)
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -437,6 +680,9 @@ class WorkflowResult(BaseModel):
     trace: list[AgentTraceEvent] = Field(default_factory=list)
     trust_summary: TrustSummary | None = None
     report: Report | None = None
+    social_posts: list[SocialPost] = Field(default_factory=list)
+    social_insights: list[SocialInsight] = Field(default_factory=list)
+    skill_assignments: list[dict[str, str]] = Field(default_factory=list)
 
 
 class GraphState(BaseModel):
@@ -453,6 +699,9 @@ class GraphState(BaseModel):
     trace: list[AgentTraceEvent] = Field(default_factory=list)
     trust_summary: TrustSummary | None = None
     report: Report | None = None
+    social_posts: list[SocialPost] = Field(default_factory=list)
+    social_insights: list[SocialInsight] = Field(default_factory=list)
+    skill_assignments: list[dict[str, str]] = Field(default_factory=list)
     loop_count: int = 0
     max_loops: int = 2
 
@@ -470,4 +719,7 @@ class GraphState(BaseModel):
             trace=self.trace,
             trust_summary=self.trust_summary,
             report=self.report,
+            social_posts=self.social_posts,
+            social_insights=self.social_insights,
+            skill_assignments=self.skill_assignments,
         )

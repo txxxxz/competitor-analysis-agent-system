@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -18,20 +20,75 @@ from app.models.schemas import (
     AnalysisGoalPolishResponse,
     CompetitorRecommendationRequest,
     CompetitorRecommendationResponse,
+    PMSkillAssignment,
+    PMSkillAssignmentsRequest,
+    PMSkillCatalogResponse,
+    PMSkillImportRequest,
+    PMSkillRecommendRequest,
+    PMSkillRecommendResponse,
+    PMSkillSlot,
+    PMSkillSyncResponse,
+    SurveyGenerationRequest,
+    SurveyGenerationResponse,
+    SurveyQuestion,
     Task,
     TaskConfig,
     WorkflowResult,
+    XhsLoginQrCodeResponse,
+    XhsMcpStatusResponse,
+    XhsQrCodeStatusRequest,
+    XhsQrCodeStatusResponse,
     count_goal_words,
     now_iso,
     validate_task_config_fields,
 )
 from app.providers.errors import ProviderConfigurationError, ProviderRequestError
 from app.providers.factory import build_lightweight_llm_provider, build_provider_bundle, load_provider_settings
+from app.providers.xhs_mcp import XhsMcpClient
+from app.skills import (
+    DEFAULT_SKILL_CANDIDATES,
+    SKILL_SLOTS,
+    SkillImportError,
+    SkillPromptComposer,
+    import_github_skill,
+    recommend_skill_slots,
+    skill_trace_fields,
+    sync_default_skills,
+)
 from app.storage.sqlite import SQLiteStore
 
 
 router = APIRouter()
 store = SQLiteStore()
+
+SETTING_KEYS = {
+    "USE_MOCK_SEARCH",
+    "USE_MOCK_LLM",
+    "SEARCH_PROVIDER",
+    "ANYSEARCH_API_KEY",
+    "ANYSEARCH_BASE_URL",
+    "ANYSEARCH_MAX_RESULTS",
+    "ANYSEARCH_CONTENT_TYPES",
+    "LLM_PROVIDER",
+    "DEEPSEEK_API_KEY",
+    "DEEPSEEK_BASE_URL",
+    "DEEPSEEK_MODEL",
+    "SEED_API_KEY",
+    "SEED_BASE_URL",
+    "SEED_MODEL",
+    "LIGHTWEIGHT_LLM_PROVIDER",
+    "LIGHTWEIGHT_SEED_API_KEY",
+    "LIGHTWEIGHT_SEED_BASE_URL",
+    "LIGHTWEIGHT_SEED_MODEL",
+    "ALLOW_PROVIDER_FALLBACK",
+    "ALLOW_EMPTY_SEARCH_FALLBACK",
+}
+SECRET_SETTING_KEYS = {
+    "ANYSEARCH_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "SEED_API_KEY",
+    "LIGHTWEIGHT_SEED_API_KEY",
+}
 
 
 def request_id() -> str:
@@ -147,8 +204,132 @@ def _report_summary(report):
         "pricing_model": report.pricing_model.model_dump(mode="json") if report.pricing_model else None,
         "user_personas": [persona.model_dump(mode="json") for persona in report.user_personas],
         "swot": report.swot.model_dump(mode="json") if report.swot else None,
+        "social_insights": [insight.model_dump(mode="json") for insight in report.social_insights],
+        "skill_assignments": report.skill_assignments,
         "created_at": report.created_at,
     }
+
+
+def _xhs_logged_in(response: dict) -> bool:
+    explicit = _find_login_bool(response)
+    if explicit is not None:
+        return explicit
+    text = json.dumps(response, ensure_ascii=False).casefold()
+    if any(term in text for term in _XHS_LOGIN_NEGATIVE_TERMS):
+        return False
+    if any(term in text for term in ["登录成功", "login successful", "cookies saved", "logged in as", "当前登录"]):
+        return True
+    return any(
+        term in text
+        for term in [
+            "已登录",
+            "logged_in",
+            "logged in",
+            "login: true",
+            '"login": true',
+            '"success": true',
+        ]
+    )
+
+
+_XHS_LOGIN_NEGATIVE_TERMS = [
+    "未登录",
+    "not logged",
+    "login_required",
+    "请登录",
+    "没有权限访问",
+    "use get_login_qrcode",
+    "login check failed",
+]
+
+
+def _find_login_bool(value: object) -> bool | None:
+    if isinstance(value, dict):
+        for key in ["logged_in", "is_logged_in", "login", "isLogin", "success"]:
+            if isinstance(value.get(key), bool):
+                return bool(value[key])
+        for item in value.values():
+            found = _find_login_bool(item)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_login_bool(item)
+            if found is not None:
+                return found
+    return None
+
+
+def _xhs_message(response: dict) -> str:
+    for key in ["message", "msg", "status", "state"]:
+        if response.get(key):
+            return str(response[key])
+    return json.dumps(response, ensure_ascii=False)[:500]
+
+
+def _extract_qrcode_payload(response: dict) -> tuple[str, str, str, str, str, int, str]:
+    qrcode = ""
+    qr_url = ""
+    qr_image_path = ""
+    qr_id = ""
+    code = ""
+    expires = 0
+    message = _xhs_message(response)
+    for key in ["qrcode_base64", "qr_code_base64", "qrcode", "qrCode", "image", "base64"]:
+        value = response.get(key)
+        if isinstance(value, str) and value.strip():
+            qrcode = value.strip()
+            break
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    for key in ["qr_url", "qrUrl", "url"]:
+        value = response.get(key, data.get(key))
+        if isinstance(value, str) and value.strip():
+            qr_url = value.strip()
+            break
+    for key in ["qr_image", "qrImage", "qr_image_path"]:
+        value = response.get(key, data.get(key))
+        if isinstance(value, str) and value.strip():
+            qr_image_path = value.strip()
+            break
+    for key in ["qr_id", "qrId", "id"]:
+        value = response.get(key, data.get(key))
+        if isinstance(value, str) and value.strip():
+            qr_id = value.strip()
+            break
+    for key in ["code", "qr_code", "qrCode"]:
+        value = response.get(key, data.get(key))
+        if isinstance(value, str) and value.strip():
+            code = value.strip()
+            break
+    if not qrcode:
+        for key in ["qrcode_base64", "qr_code_base64", "qrcode", "qrCode", "image", "base64"]:
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                qrcode = value.strip()
+                break
+    if not qrcode and qr_image_path:
+        qrcode = _read_qrcode_image(qr_image_path)
+    for key in ["expires_in_seconds", "expires_in", "expire_seconds", "timeout"]:
+        value = response.get(key, data.get(key))
+        if isinstance(value, int):
+            expires = value
+            break
+        if isinstance(value, str) and value.isdigit():
+            expires = int(value)
+            break
+    return qrcode, qr_url, qr_image_path, qr_id, code, expires, message
+
+
+def _read_qrcode_image(path: str) -> str:
+    try:
+        candidate = Path(path).expanduser()
+        if not candidate.exists() or not candidate.is_file():
+            return ""
+        if candidate.stat().st_size > 1024 * 1024:
+            return ""
+        return base64.b64encode(candidate.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
 
 
 def _clean_goal(value: object) -> str:
@@ -248,6 +429,172 @@ def _competitor_recommendation_from_provider(response: dict, payload: Competitor
     )
 
 
+def _skill_catalog_payload() -> PMSkillCatalogResponse:
+    return PMSkillCatalogResponse(
+        skills=store.list_pm_skills(),
+        slots=[PMSkillSlot(**slot) for slot in SKILL_SLOTS],
+        defaults=DEFAULT_SKILL_CANDIDATES,
+        assignments=store.get_pm_skill_assignments(),
+    )
+
+
+def _skill_context(slot: str):
+    return SkillPromptComposer(store).context_for_slot(slot)
+
+
+def _complete_with_skill(llm, purpose: str, payload: dict, skill_context=None) -> dict:
+    skill_prompt = skill_context.prompt if skill_context else ""
+    try:
+        return llm.complete_structured(purpose, payload, skill_prompt=skill_prompt)
+    except TypeError as exc:
+        if "skill_prompt" not in str(exc):
+            raise
+        return llm.complete_structured(purpose, payload)
+
+
+def _apply_skill_assignment(update) -> PMSkillAssignment:
+    skill_id = update.skill_id.strip()
+    if not update.enabled or not skill_id:
+        return store.save_pm_skill_assignment(update.slot, "", False, False)
+    skill = store.get_pm_skill(skill_id)
+    if not skill:
+        raise HTTPException(status_code=404, detail=f"Skill {skill_id} was not found.")
+    if skill.requires_license_ack and not update.license_acknowledged:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{skill.name} uses {skill.license}. Please confirm non-commercial/compliant use "
+                "before enabling this skill."
+            ),
+        )
+    return store.save_pm_skill_assignment(update.slot, skill_id, True, update.license_acknowledged or not skill.requires_license_ack)
+
+
+def _clean_text(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _survey_questions_from_provider(raw_questions: object, fallback_product: str) -> list[SurveyQuestion]:
+    questions: list[SurveyQuestion] = []
+    valid_types = {"screening", "single_choice", "multiple_choice", "likert", "ranking", "open_text"}
+    if isinstance(raw_questions, list):
+        for index, raw_question in enumerate(raw_questions, start=1):
+            if not isinstance(raw_question, dict):
+                continue
+            question_type = str(raw_question.get("type") or "open_text")
+            if question_type not in valid_types:
+                question_type = "open_text"
+            text = _clean_text(raw_question.get("text"))
+            if not text:
+                continue
+            raw_options = raw_question.get("options") if isinstance(raw_question.get("options"), list) else []
+            questions.append(
+                SurveyQuestion(
+                    question_id=_clean_text(raw_question.get("question_id")) or f"Q{index}",
+                    type=question_type,
+                    text=text,
+                    options=[_clean_text(option) for option in raw_options if _clean_text(option)],
+                    required=bool(raw_question.get("required", True)),
+                    purpose=_clean_text(raw_question.get("purpose")),
+                )
+            )
+    if questions:
+        return questions[:30]
+    return [
+        SurveyQuestion(
+            question_id="Q1",
+            type="screening",
+            text=f"你是否在过去 3 个月内使用或评估过 {fallback_product} 或同类产品？",
+            options=["是", "否"],
+            purpose="确认样本资格",
+        ),
+        SurveyQuestion(
+            question_id="Q2",
+            type="likert",
+            text=f"请评价 {fallback_product} 对核心任务效率的帮助程度。",
+            options=["1 非常不同意", "2", "3", "4", "5 非常同意"],
+            purpose="量化价值感知",
+        ),
+        SurveyQuestion(
+            question_id="Q3",
+            type="open_text",
+            text=f"请描述一次你使用 {fallback_product} 或同类产品完成任务的经历。",
+            required=False,
+            purpose="收集真实使用场景",
+        ),
+    ]
+
+
+def _survey_json(title: str, questions: list[SurveyQuestion]) -> dict:
+    return {
+        "title": title,
+        "version": "1.0",
+        "groups": [
+            {
+                "nameID": "user_research",
+                "title": "用户调研",
+                "questions": [question.question_id for question in questions],
+            }
+        ],
+        "questions": [
+            {
+                "nameID": question.question_id,
+                "type": question.type,
+                "title": question.text,
+                "required": question.required,
+                "choices": question.options,
+                "metadata": {"purpose": question.purpose},
+            }
+            for question in questions
+        ],
+    }
+
+
+def _survey_response_from_provider(response: dict, payload: SurveyGenerationRequest, provider: str, skill_context=None) -> SurveyGenerationResponse:
+    product_name = _clean_text(payload.product_name)
+    title = _clean_text(response.get("title")) or f"{product_name} 用户调研问卷"
+    questions = _survey_questions_from_provider(response.get("questions"), product_name)
+    raw_screening = response.get("screening_criteria") if isinstance(response.get("screening_criteria"), list) else []
+    raw_analysis = response.get("analysis_plan") if isinstance(response.get("analysis_plan"), list) else []
+    raw_survey_json = response.get("survey_json") if isinstance(response.get("survey_json"), dict) else {}
+    meta = response.get("__provider_meta") if isinstance(response.get("__provider_meta"), dict) else {}
+    return SurveyGenerationResponse(
+        title=title,
+        research_objective=_clean_text(response.get("research_objective")) or _clean_text(payload.research_goal),
+        target_users=_clean_text(response.get("target_users")) or _clean_text(payload.target_users),
+        screening_criteria=[_clean_text(item) for item in raw_screening if _clean_text(item)] or [
+            "受访者需要符合目标用户画像。",
+            "受访者需要有相关产品或替代方案的真实使用/评估经验。",
+        ],
+        questions=questions,
+        analysis_plan=[_clean_text(item) for item in raw_analysis if _clean_text(item)] or [
+            "按筛选题剔除无效样本。",
+            "量表题做分布和分组比较，开放题做主题编码。",
+            "将高频痛点、任务场景和购买阻力沉淀为产品机会点。",
+        ],
+        survey_json=raw_survey_json or _survey_json(title, questions),
+        skill_source=(
+            {
+                "name": skill_context.skill_name,
+                "repository": skill_context.skill_repo,
+                "license": skill_context.license,
+                "agent_skill": skill_context.skill_path,
+                "content_hash": skill_context.skill_hash,
+            }
+            if skill_context
+            else {
+                "name": "surveygo",
+                "repository": "https://github.com/rendis/surveygo",
+                "license": "MIT",
+                "agent_skill": "skills/surveygo",
+                "install_hint": "npx skills add https://github.com/rendis/surveygo --skill surveygo",
+            }
+        ),
+        provider=provider,
+        provider_request_id=str(meta.get("request_id") or ""),
+    )
+
+
 def _sse_message(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -320,9 +667,213 @@ def _provider_status():
     }
 
 
+def _settings_payload() -> dict:
+    settings = load_provider_settings()
+    stored = store.get_app_settings()
+    api_keys = {
+        "ANYSEARCH_API_KEY": bool(settings.anysearch_api_key),
+        "DEEPSEEK_API_KEY": bool(settings.deepseek_api_key),
+        "SEED_API_KEY": bool(settings.seed_api_key),
+        "LIGHTWEIGHT_SEED_API_KEY": bool(settings.lightweight_seed_api_key),
+    }
+    return {
+        "values": {
+            "USE_MOCK_SEARCH": settings.use_mock_search,
+            "USE_MOCK_LLM": settings.use_mock_llm,
+            "SEARCH_PROVIDER": settings.search_provider,
+            "ANYSEARCH_BASE_URL": settings.anysearch_base_url,
+            "ANYSEARCH_MAX_RESULTS": settings.anysearch_max_results,
+            "ANYSEARCH_CONTENT_TYPES": ",".join(settings.anysearch_content_types),
+            "LLM_PROVIDER": settings.llm_provider,
+            "DEEPSEEK_BASE_URL": settings.deepseek_base_url,
+            "DEEPSEEK_MODEL": settings.deepseek_model,
+            "SEED_BASE_URL": settings.seed_base_url,
+            "SEED_MODEL": settings.seed_model,
+            "LIGHTWEIGHT_LLM_PROVIDER": settings.lightweight_llm_provider,
+            "LIGHTWEIGHT_SEED_BASE_URL": settings.lightweight_seed_base_url,
+            "LIGHTWEIGHT_SEED_MODEL": settings.lightweight_seed_model,
+            "ALLOW_PROVIDER_FALLBACK": settings.allow_provider_fallback,
+            "ALLOW_EMPTY_SEARCH_FALLBACK": settings.allow_empty_search_fallback,
+        },
+        "api_keys": api_keys,
+        "stored_keys": sorted(stored.keys()),
+        "encrypted_keys": sorted(key for key, value in stored.items() if value.encrypted),
+        "provider_status": _provider_status(),
+    }
+
+
+def _normalized_setting_updates(payload: dict) -> dict[str, str]:
+    values = payload.get("values", payload)
+    if not isinstance(values, dict):
+        raise ValueError("Settings payload must contain a values object.")
+    updates: dict[str, str] = {}
+    for key, value in values.items():
+        if key not in SETTING_KEYS:
+            continue
+        if key in SECRET_SETTING_KEYS and str(value or "") == "":
+            continue
+        if isinstance(value, bool):
+            updates[key] = "true" if value else "false"
+        else:
+            updates[key] = str(value or "").strip()
+    return updates
+
+
 @router.get("/v1/provider-status")
 def provider_status_v1():
     return api_response(_provider_status())
+
+
+@router.get("/v1/settings")
+def get_settings_v1():
+    return api_response(_settings_payload())
+
+
+@router.get("/v1/social/xhs/status")
+def get_xhs_status_v1():
+    client = XhsMcpClient()
+    try:
+        response = client.check_login_status()
+    except ProviderRequestError as exc:
+        return api_response(
+            XhsMcpStatusResponse(
+                connected=False,
+                logged_in=False,
+                login_required=True,
+                message=str(exc),
+                mcp_url=client.base_url,
+            ).model_dump(mode="json")
+        )
+    logged_in = _xhs_logged_in(response)
+    return api_response(
+        XhsMcpStatusResponse(
+            connected=True,
+            logged_in=logged_in,
+            login_required=not logged_in,
+            message=_xhs_message(response) or ("已登录" if logged_in else "小红书需要登录。"),
+            mcp_url=client.base_url,
+        ).model_dump(mode="json")
+    )
+
+
+@router.post("/v1/social/xhs/login-qrcode")
+def get_xhs_login_qrcode_v1():
+    client = XhsMcpClient()
+    try:
+        response = client.get_login_qrcode()
+    except ProviderRequestError as exc:
+        return api_response(
+            XhsLoginQrCodeResponse(
+                connected=False,
+                login_required=True,
+                message=str(exc),
+                mcp_url=client.base_url,
+            ).model_dump(mode="json")
+        )
+    qrcode, qr_url, qr_image_path, qr_id, code, expires, message = _extract_qrcode_payload(response)
+    return api_response(
+        XhsLoginQrCodeResponse(
+            connected=True,
+            login_required=True,
+            qrcode_base64=qrcode,
+            qr_url=qr_url,
+            qr_image_path=qr_image_path,
+            qr_id=qr_id,
+            code=code,
+            expires_in_seconds=expires,
+            message=message or ("已生成登录二维码。" if qrcode else "MCP 未返回二维码，请检查服务日志。"),
+            mcp_url=client.base_url,
+        ).model_dump(mode="json")
+    )
+
+
+@router.post("/v1/social/xhs/qrcode-status")
+def check_xhs_qrcode_status_v1(payload: XhsQrCodeStatusRequest):
+    client = XhsMcpClient()
+    if not payload.qr_id or not payload.code:
+        return api_response(
+            XhsQrCodeStatusResponse(
+                connected=False,
+                logged_in=False,
+                login_required=True,
+                status="missing_qrcode_tokens",
+                message="MCP 未返回 qr_id/code，无法轮询扫码状态；请刷新二维码或检查 xiaohongshu-mcp 版本。",
+                mcp_url=client.base_url,
+            ).model_dump(mode="json")
+        )
+    try:
+        response = client.check_qrcode_status(payload.qr_id, payload.code)
+    except ProviderRequestError as exc:
+        return api_response(
+            XhsQrCodeStatusResponse(
+                connected=False,
+                logged_in=False,
+                login_required=True,
+                status="unavailable",
+                message=str(exc),
+                mcp_url=client.base_url,
+            ).model_dump(mode="json")
+        )
+    logged_in = _xhs_logged_in(response)
+    status_text = str(response.get("status") or response.get("state") or response.get("code") or "")
+    return api_response(
+        XhsQrCodeStatusResponse(
+            connected=True,
+            logged_in=logged_in,
+            login_required=not logged_in,
+            status=status_text,
+            message=_xhs_message(response) or ("扫码登录已完成。" if logged_in else "等待扫码确认。"),
+            mcp_url=client.base_url,
+        ).model_dump(mode="json")
+    )
+
+
+@router.put("/v1/settings")
+async def update_settings_v1(request: Request):
+    payload = await request.json()
+    try:
+        updates = _normalized_setting_updates(payload)
+    except ValueError as exc:
+        return problem_response(422, "Validation Error", str(exc))
+    if not updates:
+        return problem_response(422, "Validation Error", "No supported settings were provided.")
+    store.save_app_settings(updates)
+    return api_response(_settings_payload())
+
+
+@router.get("/v1/skills/catalog")
+def get_pm_skills_catalog():
+    return api_response(_skill_catalog_payload())
+
+
+@router.post("/v1/skills/import-github")
+def import_pm_skill_from_github(payload: PMSkillImportRequest):
+    try:
+        skill = import_github_skill(payload.github_url, intent=payload.intent, license_name=str(payload.license), source="user")
+    except SkillImportError as exc:
+        return problem_response(422, "Skill Import Error", str(exc))
+    store.upsert_pm_skill(skill)
+    return api_response({"skill": skill, "catalog": _skill_catalog_payload()})
+
+
+@router.post("/v1/skills/sync-defaults")
+def sync_default_pm_skills():
+    imported, warnings, assignments = sync_default_skills(store)
+    return api_response(PMSkillSyncResponse(imported=imported, warnings=warnings, assignments=assignments))
+
+
+@router.put("/v1/skills/assignments")
+def update_pm_skill_assignments(payload: PMSkillAssignmentsRequest):
+    assignments: list[PMSkillAssignment] = []
+    for update in payload.assignments:
+        assignments.append(_apply_skill_assignment(update))
+    return api_response({"assignments": assignments, "catalog": _skill_catalog_payload()})
+
+
+@router.post("/v1/skills/recommend")
+def recommend_pm_skills(payload: PMSkillRecommendRequest):
+    recommendations = recommend_skill_slots(payload.top_level_goal, payload.task_domain, payload.data_sources, store.list_pm_skills())
+    return api_response(PMSkillRecommendResponse(recommendations=recommendations))
 
 
 @router.post("/tasks")
@@ -342,7 +893,9 @@ def polish_analysis_goals(payload: AnalysisGoalPolishRequest):
         return problem_response(422, "Validation Error", "Draft analysis goal text is required.")
     try:
         llm, llm_mode = build_lightweight_llm_provider()
-        response = llm.complete_structured(
+        skill_context = _skill_context("competitor_analysis")
+        response = _complete_with_skill(
+            llm,
             "analysis_goal_polish",
             {
                 "draft": draft,
@@ -356,6 +909,7 @@ def polish_analysis_goals(payload: AnalysisGoalPolishRequest):
                     "Return numbered-list-ready items.",
                 ],
             },
+            skill_context,
         )
     except (ProviderConfigurationError, ProviderRequestError) as exc:
         return problem_response(502, "Provider Error", str(exc))
@@ -370,7 +924,9 @@ def condense_analysis_goals(payload: AnalysisGoalCondenseRequest):
     max_words = min(max(payload.max_words, 100), 1000)
     try:
         llm, llm_mode = build_lightweight_llm_provider()
-        response = llm.complete_structured(
+        skill_context = _skill_context("competitor_analysis")
+        response = _complete_with_skill(
+            llm,
             "analysis_goal_condense",
             {
                 "draft": draft,
@@ -385,6 +941,7 @@ def condense_analysis_goals(payload: AnalysisGoalCondenseRequest):
                     "Return a concise text that can be used directly as analysis_goals.",
                 ],
             },
+            skill_context,
         )
     except (ProviderConfigurationError, ProviderRequestError) as exc:
         return problem_response(502, "Provider Error", str(exc))
@@ -398,7 +955,9 @@ def recommend_competitors(payload: CompetitorRecommendationRequest):
         return problem_response(422, "Validation Error", "Target product is required for competitor recommendation.")
     try:
         llm, llm_mode = build_lightweight_llm_provider()
-        response = llm.complete_structured(
+        skill_context = _skill_context("competitor_analysis")
+        response = _complete_with_skill(
+            llm,
             "competitor_recommendation",
             {
                 "target_product": target_product,
@@ -412,10 +971,56 @@ def recommend_competitors(payload: CompetitorRecommendationRequest):
                     "Exclude duplicates, the target product, and existing competitors.",
                 ],
             },
+            skill_context,
         )
     except (ProviderConfigurationError, ProviderRequestError) as exc:
         return problem_response(502, "Provider Error", str(exc))
     return api_response(_competitor_recommendation_from_provider(response, payload, llm.provider_name))
+
+
+@router.post("/v1/surveys/generate")
+def generate_user_research_survey(payload: SurveyGenerationRequest):
+    product_name = payload.product_name.strip()
+    research_goal = payload.research_goal.strip()
+    target_users = payload.target_users.strip()
+    if not product_name:
+        return problem_response(422, "Validation Error", "Product name is required.")
+    if not research_goal:
+        return problem_response(422, "Validation Error", "Research goal is required.")
+    if not target_users:
+        return problem_response(422, "Validation Error", "Target users are required.")
+    question_count = min(max(payload.question_count, 6), 30)
+    try:
+        llm, llm_mode = build_lightweight_llm_provider()
+        skill_context = _skill_context("interview_script")
+        response = _complete_with_skill(
+            llm,
+            "survey_generation",
+            {
+                "product_name": product_name,
+                "research_goal": research_goal,
+                "target_users": target_users,
+                "scenario": payload.scenario,
+                "question_count": question_count,
+                "language": payload.language,
+                "skill_source": {
+                    "name": "surveygo",
+                    "repository": "https://github.com/rendis/surveygo",
+                    "license": "MIT",
+                    "agent_skill": "skills/surveygo",
+                },
+                "requirements": [
+                    "Use the MIT-licensed SurveyGo agent skill as the questionnaire structure reference.",
+                    "Include screening, behavior, need, decision-factor, Likert-scale, and open-text questions.",
+                    "Avoid leading questions, double-barreled questions, and invented product facts.",
+                    "Return a SurveyGo/SurveyJS-friendly survey_json draft.",
+                ],
+            },
+            skill_context,
+        )
+    except (ProviderConfigurationError, ProviderRequestError) as exc:
+        return problem_response(502, "Provider Error", str(exc))
+    return api_response(_survey_response_from_provider(response, payload, llm.provider_name, skill_context))
 
 
 @router.post("/v1/tasks", status_code=status.HTTP_201_CREATED)

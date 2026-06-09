@@ -13,7 +13,7 @@
 - SQLite 保存任务和完整 workflow result。
 - Mock providers 返回确定性的 demo fixtures。
 - AnySearchProvider / SeedLLMProvider 通过 provider factory 接入 live path。
-- Report schema 输出 FeatureTree、PricingModel、UserPersona、SWOT。
+- Report schema 输出 User Journey（兼容 FeatureTree schema）、PricingModel、UserPersona、SWOT。
 - AgentTraceEvent 记录 prompt、input、output、token、latency、provider、request id 等审计字段。
 
 主要文件：

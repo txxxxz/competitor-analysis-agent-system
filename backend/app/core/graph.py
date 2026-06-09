@@ -13,6 +13,7 @@ from app.core.nodes import (
     planner_node,
     interaction_node,
     research_node,
+    social_listening_node,
     source_normalizer_node,
     template_node,
     trust_summary_node,
@@ -34,6 +35,7 @@ def build_graph():
     graph.add_node("planner_node", planner_node)
     graph.add_node("template_node", template_node)
     graph.add_node("research_node", research_node)
+    graph.add_node("social_listening_node", social_listening_node)
     graph.add_node("source_normalizer_node", source_normalizer_node)
     graph.add_node("evidence_extractor_node", evidence_extractor_node)
     graph.add_node("interaction_node", interaction_node)
@@ -47,7 +49,8 @@ def build_graph():
     graph.add_edge(START, "planner_node")
     graph.add_edge("planner_node", "template_node")
     graph.add_edge("template_node", "research_node")
-    graph.add_edge("research_node", "source_normalizer_node")
+    graph.add_edge("research_node", "social_listening_node")
+    graph.add_edge("social_listening_node", "source_normalizer_node")
     graph.add_edge("source_normalizer_node", "evidence_extractor_node")
     graph.add_edge("evidence_extractor_node", "interaction_node")
     graph.add_edge("interaction_node", "analyst_node")

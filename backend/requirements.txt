@@ -4,3 +4,5 @@ pydantic==2.10.4
 langgraph==0.2.60
 python-dotenv==1.0.1
 pytest==8.3.4
+qrcode==8.2
+xiaohongshu-mcp-server==0.1.1

@@ -29,7 +29,7 @@
 - Critic Agent 到 Research Agent 的 Review Ticket 闭环。
 - Review Ticket 覆盖 pricing、feature、target_user、security、contradiction 缺口。
 - 证据/结论绑定，以及无支撑结论降级。
-- 报告结构化输出：FeatureTree、PricingModel、UserPersona、SWOT。
+- 报告结构化输出：User Journey（兼容 FeatureTree schema）、PricingModel、UserPersona、SWOT。
 - Agent Trace 记录 prompt/input/output/token/latency/provider/request id 字段。
 - Demo fixture run 与 Live provider run 在 Trust Summary、ToolCall、Trace 中明确标注。
 - DeepSeek LLM provider：支持 `claim_enrichment`、`review_ticket_suggestions`、`report_enhancement` 和查询竞品目标 AI 润色。
@@ -99,7 +99,7 @@ http://localhost:5173
 8. 打开 `Evidence & Claims`。
 9. 确认被纳入的结论都有证据支撑，无支撑结论已被降级。
 10. 打开 `Final Report`。
-11. 确认报告列出了 FeatureTree、PricingModel、UserPersona、SWOT、evidence id、来源和不确定性说明。
+11. 确认报告列出了 User Journey、PricingModel、UserPersona、SWOT、evidence id、来源和不确定性说明。
 
 ## 架构
 
@@ -182,7 +182,7 @@ USE_MOCK_LLM=false
 SEARCH_PROVIDER=duckduckgo
 ANYSEARCH_API_KEY=你的_anysearch_key
 ANYSEARCH_BASE_URL=https://api.anysearch.com/v1/search
-ANYSEARCH_MAX_RESULTS=5
+ANYSEARCH_MAX_RESULTS=15
 LLM_PROVIDER=deepseek
 DEEPSEEK_API_KEY=你的_deepseek_key
 DEEPSEEK_BASE_URL=https://api.deepseek.com/chat/completions

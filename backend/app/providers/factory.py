@@ -15,6 +15,7 @@ from app.providers.mock_llm import MockLLMProvider
 from app.providers.mock_search import MockSearchProvider
 from app.providers.search import SearchProvider
 from app.providers.seed import SeedLLMProvider
+from app.storage.sqlite import SQLiteStore
 
 
 @dataclass(frozen=True)
@@ -55,27 +56,28 @@ class ProviderBundle:
 
 def load_provider_settings() -> ProviderSettings:
     _load_env_files()
+    stored = _stored_provider_settings()
     return ProviderSettings(
-        use_mock_search=_env_bool("USE_MOCK_SEARCH", False),
-        use_mock_llm=_env_bool("USE_MOCK_LLM", False),
-        search_provider=os.getenv("SEARCH_PROVIDER", "anysearch").strip().lower(),
-        anysearch_api_key=os.getenv("ANYSEARCH_API_KEY", ""),
-        anysearch_base_url=os.getenv("ANYSEARCH_BASE_URL", "https://api.anysearch.com/v1/search"),
-        anysearch_max_results=_env_int("ANYSEARCH_MAX_RESULTS", 5),
-        anysearch_content_types=_env_list("ANYSEARCH_CONTENT_TYPES"),
-        llm_provider=os.getenv("LLM_PROVIDER", "deepseek").strip().lower(),
-        deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
-        deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/chat/completions"),
-        deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-        seed_api_key=os.getenv("SEED_API_KEY", ""),
-        seed_base_url=os.getenv("SEED_BASE_URL", ""),
-        seed_model=os.getenv("SEED_MODEL", ""),
-        lightweight_llm_provider=os.getenv("LIGHTWEIGHT_LLM_PROVIDER", os.getenv("LLM_PROVIDER", "deepseek")).strip().lower(),
-        lightweight_seed_api_key=os.getenv("LIGHTWEIGHT_SEED_API_KEY", os.getenv("SEED_API_KEY", "")),
-        lightweight_seed_base_url=os.getenv("LIGHTWEIGHT_SEED_BASE_URL", os.getenv("SEED_BASE_URL", "")),
-        lightweight_seed_model=os.getenv("LIGHTWEIGHT_SEED_MODEL", os.getenv("SEED_MODEL", "")),
-        allow_provider_fallback=_env_bool("ALLOW_PROVIDER_FALLBACK", False),
-        allow_empty_search_fallback=_env_bool("ALLOW_EMPTY_SEARCH_FALLBACK", False),
+        use_mock_search=_bool_setting(stored, "USE_MOCK_SEARCH", False),
+        use_mock_llm=_bool_setting(stored, "USE_MOCK_LLM", False),
+        search_provider=_setting(stored, "SEARCH_PROVIDER", "anysearch").strip().lower(),
+        anysearch_api_key=_setting(stored, "ANYSEARCH_API_KEY", ""),
+        anysearch_base_url=_setting(stored, "ANYSEARCH_BASE_URL", "https://api.anysearch.com/v1/search"),
+        anysearch_max_results=_int_setting(stored, "ANYSEARCH_MAX_RESULTS", 15),
+        anysearch_content_types=_list_setting(stored, "ANYSEARCH_CONTENT_TYPES"),
+        llm_provider=_setting(stored, "LLM_PROVIDER", "deepseek").strip().lower(),
+        deepseek_api_key=_setting(stored, "DEEPSEEK_API_KEY", ""),
+        deepseek_base_url=_setting(stored, "DEEPSEEK_BASE_URL", "https://api.deepseek.com/chat/completions"),
+        deepseek_model=_setting(stored, "DEEPSEEK_MODEL", "deepseek-chat"),
+        seed_api_key=_setting(stored, "SEED_API_KEY", ""),
+        seed_base_url=_setting(stored, "SEED_BASE_URL", ""),
+        seed_model=_setting(stored, "SEED_MODEL", ""),
+        lightweight_llm_provider=_setting(stored, "LIGHTWEIGHT_LLM_PROVIDER", _setting(stored, "LLM_PROVIDER", "deepseek")).strip().lower(),
+        lightweight_seed_api_key=_setting(stored, "LIGHTWEIGHT_SEED_API_KEY", _setting(stored, "SEED_API_KEY", "")),
+        lightweight_seed_base_url=_setting(stored, "LIGHTWEIGHT_SEED_BASE_URL", _setting(stored, "SEED_BASE_URL", "")),
+        lightweight_seed_model=_setting(stored, "LIGHTWEIGHT_SEED_MODEL", _setting(stored, "SEED_MODEL", "")),
+        allow_provider_fallback=_bool_setting(stored, "ALLOW_PROVIDER_FALLBACK", False),
+        allow_empty_search_fallback=_bool_setting(stored, "ALLOW_EMPTY_SEARCH_FALLBACK", False),
     )
 
 
@@ -200,3 +202,41 @@ def _env_int(name: str, default: int) -> int:
 def _env_list(name: str) -> tuple[str, ...]:
     raw = os.getenv(name, "")
     return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def _stored_provider_settings() -> dict[str, str]:
+    try:
+        return {key: setting.value for key, setting in SQLiteStore().get_app_settings().items()}
+    except Exception:
+        return {}
+
+
+def _setting(stored: dict[str, str], name: str, default: str) -> str:
+    value = stored.get(name)
+    if value not in (None, ""):
+        return value
+    return os.getenv(name, default)
+
+
+def _bool_setting(stored: dict[str, str], name: str, default: bool) -> bool:
+    value = stored.get(name)
+    if value not in (None, ""):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return _env_bool(name, default)
+
+
+def _int_setting(stored: dict[str, str], name: str, default: int) -> int:
+    value = stored.get(name)
+    if value not in (None, ""):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return _env_int(name, default)
+
+
+def _list_setting(stored: dict[str, str], name: str) -> tuple[str, ...]:
+    value = stored.get(name)
+    if value not in (None, ""):
+        return tuple(item.strip() for item in value.split(",") if item.strip())
+    return _env_list(name)

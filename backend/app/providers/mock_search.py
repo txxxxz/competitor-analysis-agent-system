@@ -14,7 +14,7 @@ class MockSearchProvider(SearchProvider):
         candidates = fixtures.get(query.product, [])
         if query.expected_evidence == "pricing":
             return [item for item in candidates if item.get("evidence_type") == "pricing"]
-        if query.expected_evidence in {"feature", "target_user", "security", "contradiction"}:
+        if query.expected_evidence in {"feature", "target_user", "security", "contradiction", "third_party_context"}:
             return [item for item in candidates if item.get("evidence_type") == query.expected_evidence]
         if query.expected_evidence in {"positioning", "agent_capability", "workflow"}:
             matched = [item for item in candidates if item.get("evidence_type") == query.expected_evidence]

@@ -62,9 +62,9 @@ class _DuckDuckGoHTMLParser(HTMLParser):
 class DuckDuckGoSearchProvider(SearchProvider):
     provider_name = "DuckDuckGoSearchProvider"
 
-    def __init__(self, timeout_seconds: int = 5, max_results: int = 5):
+    def __init__(self, timeout_seconds: int = 5, max_results: int = 15):
         self.timeout_seconds = timeout_seconds
-        self.max_results = max(1, min(max_results, 10))
+        self.max_results = max(1, min(max_results, 15))
 
     def search(self, task_id: str, query: SearchQuery, supplement: bool = False) -> list[dict]:
         html = self._fetch_html(query.query)

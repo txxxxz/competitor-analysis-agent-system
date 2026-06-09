@@ -14,9 +14,13 @@ import {
   GitBranch,
   LayoutDashboard,
   ListChecks,
+  KeyRound,
   Menu,
   Play,
+  QrCode,
   RefreshCw,
+  Search,
+  Settings,
   ShieldCheck,
   Sparkles,
   Table2,
@@ -25,22 +29,32 @@ import {
 } from "lucide-react";
 import {
   acceptReviewTicket,
+  checkXhsQrCodeStatus,
   condenseAnalysisGoals,
   createTaskV1,
   dismissReviewTicket,
   downgradeReviewTicket,
   excludeEvidence,
   exportReport,
+  getAppSettings,
   getProviderStatus,
   getTask,
   getTasks,
+  generateUserResearchSurvey,
+  getSkillCatalog,
   markReviewTicketUnavailable,
+  getXhsLoginQrCode,
+  getXhsStatus,
+  importGithubSkill,
   polishAnalysisGoals,
   recommendCompetitors,
+  syncDefaultSkills,
   rerunReviewTicket,
   resolveReviewTicket,
   restoreEvidence,
   streamTaskRun,
+  updateAppSettings,
+  updateSkillAssignments,
 } from "./api/client";
 import "./styles/app.css";
 
@@ -77,7 +91,7 @@ const domainOptions = [
 
 const strictnessOptions = ["high", "standard", "low"];
 const strictnessCopy = {
-  high: "高：严格要求证据",
+  high: "高：官方或多源交叉印证",
   standard: "标准：平衡覆盖与可信度",
   low: "低：允许探索性结论",
 };
@@ -95,6 +109,7 @@ const dimensionCopy = {
   pricing: "定价",
   security: "安全与合规",
   collaboration: "协作",
+  social_sentiment: "社媒舆情",
 };
 
 const evidenceTypeCopy = {
@@ -106,6 +121,7 @@ const evidenceTypeCopy = {
   security: "安全与隐私",
   contradiction: "矛盾校验",
   positioning: "定位",
+  social_sentiment: "社媒舆情",
   official_pricing_page: "官方定价页",
   official_docs: "官方文档",
   official_browser_walkthrough: "官方页面实测",
@@ -125,14 +141,72 @@ const sourcePreferenceCopy = {
 };
 
 const nodeCopy = {
+  PlannerAgent: "规划 Agent",
+  TemplateAgent: "模板 Agent",
   ResearchAgent: "检索 Agent",
+  SourceNormalizer: "来源整理 Agent",
   CriticAgent: "复核 Agent",
+  EvidenceExtractor: "证据抽取 Agent",
   EvidenceConsistencyReviewer: "证据一致性复核",
   WriterAgent: "报告生成 Agent",
   AnalystAgent: "分析 Agent",
   InteractionAgent: "交互实测 Agent",
+  SocialListeningAgent: "舆情 Agent",
+  Workflow: "工作流",
+  planner: "规划",
+  template: "模板",
+  research: "检索",
+  source_normalizer: "来源整理",
+  evidence_extractor: "证据抽取",
+  interaction: "交互实测",
+  social_listening: "社媒舆情",
+  analyst: "结论生成",
+  critic: "复核",
+  evidence_reviewer: "证据门禁",
+  trust_summary: "可信度摘要",
+  writer: "报告生成",
+  finalize: "收尾",
   review_ticket: "复核工单",
 };
+
+const workflowSteps = [
+  ["planner", "规划", "正在整理目标、竞品和分析要求。"],
+  ["template", "模板", "正在选择匹配当前任务的分析模板。"],
+  ["research", "检索", "正在检索候选来源并补齐关键证据。"],
+  ["source_normalizer", "来源", "正在筛选来源可信度、去重并剔除无关结果。"],
+  ["evidence_extractor", "证据", "正在从来源中抽取可引用的证据。"],
+  ["interaction", "实测", "正在处理浏览器实测路径和交互证据。"],
+  ["social_listening", "舆情", "正在采集或整理社媒舆情样本。"],
+  ["analyst", "结论", "正在把证据转成可复核的分析结论。"],
+  ["critic", "复核", "正在检查覆盖缺口并生成复核工单。"],
+  ["evidence_reviewer", "门禁", "正在校验证据绑定和结论可信度。"],
+  ["trust_summary", "可信度", "正在汇总可信度指标和剩余风险。"],
+  ["writer", "报告", "正在生成最终 Markdown 报告。"],
+  ["finalize", "完成", "正在收尾并保存工作流结果。"],
+];
+
+const terminalTraceEvents = new Set([
+  "brief_created",
+  "template_selected",
+  "search_completed",
+  "supplemental_search",
+  "sources_normalized",
+  "evidence_extracted",
+  "interaction_skipped",
+  "interaction_evidence_created",
+  "interaction_completed",
+  "social_listening_skipped",
+  "social_listening_completed",
+  "claims_generated",
+  "quality_review_passed",
+  "review_tickets_created",
+  "llm_review_ticket_suggestions_applied",
+  "llm_review_ticket_suggestions_skipped",
+  "evidence_gate_completed",
+  "trust_summary_created",
+  "report_drafted",
+  "workflow_completed",
+]);
 
 const goalPromptDraft = "例如：希望分析 Cursor 相比 GitHub Copilot、Windsurf、TRAE 在 AI Agent 工作流、代码理解、定价、团队协作和企业落地风险上的差异，并输出产品机会点。";
 const maxAnalysisGoalWords = 1000;
@@ -149,18 +223,77 @@ const goalValueCopy = {
 const goalValueReverseCopy = Object.fromEntries(Object.entries(goalValueCopy).map(([key, value]) => [value, key]));
 const emptyTaskForm = {
   domain: "ai_tools",
-  target_product: "",
-  competitors: [],
+  target_product: "飞书",
+  competitors: ["钉钉", "企业微信"],
   competitorDraft: "",
-  goalsText: "",
+  goalsText: `分析飞书、钉钉、企业微信在 OpenCloud 接入方面的开放性，包括：
+(a) 能实现哪些功能，不能实现哪些功能
+(b) 对于新手小白的友好性，重点比较新手教学和上手引导`,
   depth: "standard",
   evidence_strictness: "high",
   audience: "产品团队",
   notes: "",
+  socialListening: {
+    enabled: true,
+    manual_xhs_summary: "",
+    manual_source_urls: "",
+    platforms: {
+      xiaohongshu: {
+        enabled: true,
+        keywordsText: "",
+        sort_by: "综合",
+        note_type: "不限",
+        publish_time: "一周内",
+        max_posts_per_keyword: 15,
+        fetch_comments: true,
+        max_comments_per_post: 30,
+      },
+      weibo: { enabled: false, keywordsText: "" },
+      douyin: { enabled: false, keywordsText: "" },
+    },
+  },
+};
+
+function createEmptyTaskForm() {
+  return JSON.parse(JSON.stringify(emptyTaskForm));
+}
+const emptySurveyForm = {
+  product_name: "",
+  research_goal: "",
+  target_users: "",
+  scenario: "",
+  question_count: 12,
+  language: "zh-CN",
+};
+const emptySettingsForm = {
+  SEARCH_PROVIDER: "anysearch",
+  ANYSEARCH_API_KEY: "",
+  ANYSEARCH_BASE_URL: "https://api.anysearch.com/v1/search",
+  ANYSEARCH_MAX_RESULTS: 5,
+  ANYSEARCH_CONTENT_TYPES: "",
+  LLM_PROVIDER: "deepseek",
+  DEEPSEEK_API_KEY: "",
+  DEEPSEEK_BASE_URL: "https://api.deepseek.com/chat/completions",
+  DEEPSEEK_MODEL: "deepseek-chat",
+  SEED_API_KEY: "",
+  SEED_BASE_URL: "",
+  SEED_MODEL: "",
+  LIGHTWEIGHT_LLM_PROVIDER: "deepseek",
+  LIGHTWEIGHT_SEED_API_KEY: "",
+  LIGHTWEIGHT_SEED_BASE_URL: "",
+  LIGHTWEIGHT_SEED_MODEL: "",
+  USE_MOCK_SEARCH: false,
+  USE_MOCK_LLM: false,
+  ALLOW_PROVIDER_FALLBACK: false,
+  ALLOW_EMPTY_SEARCH_FALLBACK: false,
 };
 
 function App() {
-  const [taskForm, setTaskForm] = useState(() => ({ ...emptyTaskForm }));
+  const [taskForm, setTaskForm] = useState(() => createEmptyTaskForm());
+  const [surveyForm, setSurveyForm] = useState(() => ({ ...emptySurveyForm }));
+  const [surveyResult, setSurveyResult] = useState(null);
+  const [surveyLoading, setSurveyLoading] = useState(false);
+  const [surveyError, setSurveyError] = useState("");
   const [result, setResult] = useState(null);
   const [activeView, setActiveView] = useState("home");
   const [activeTab, setActiveTab] = useState("overview");
@@ -174,11 +307,33 @@ function App() {
   const [recentLoading, setRecentLoading] = useState(false);
   const [providerStatus, setProviderStatus] = useState(null);
   const [providerLoading, setProviderLoading] = useState(true);
+  const [settingsForm, setSettingsForm] = useState(() => ({ ...emptySettingsForm }));
+  const [settingsMeta, setSettingsMeta] = useState(null);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState("");
+  const [settingsError, setSettingsError] = useState("");
+  const [skillCatalog, setSkillCatalog] = useState({ skills: [], slots: [], defaults: [], assignments: [] });
+  const [skillSelections, setSkillSelections] = useState({});
+  const [skillImportUrl, setSkillImportUrl] = useState("");
+  const [skillLicenseAck, setSkillLicenseAck] = useState(false);
+  const [skillLoading, setSkillLoading] = useState(false);
+  const [skillSaving, setSkillSaving] = useState(false);
+  const [skillMessage, setSkillMessage] = useState("");
+  const [skillError, setSkillError] = useState("");
+  const [xhsStatus, setXhsStatus] = useState(null);
+  const [xhsQrCode, setXhsQrCode] = useState(null);
+  const [xhsQrStatus, setXhsQrStatus] = useState(null);
+  const [xhsLoginLoading, setXhsLoginLoading] = useState(false);
+  const [xhsLoginError, setXhsLoginError] = useState("");
+  const pendingXhsLaunchRef = useRef(false);
+  const xhsAutoContinuingRef = useRef(false);
   const workspaceRef = useRef(null);
 
   useEffect(() => {
     refreshRecentTasks();
     refreshProviderStatus();
+    refreshSettings();
   }, []);
 
   const metrics = useMemo(() => {
@@ -202,6 +357,7 @@ function App() {
 
   function openConfigPage() {
     setResult(null);
+    setSurveyResult(null);
     setLiveTrace([]);
     setStreamState(null);
     setActionMessage("");
@@ -210,6 +366,92 @@ function App() {
     setActiveView("config");
     focusWorkspace();
   }
+
+  function openSurveyPage() {
+    setResult(null);
+    setLiveTrace([]);
+    setStreamState(null);
+    setActionMessage("");
+    setError("");
+    setSurveyError("");
+    setSidebarOpen(false);
+    setActiveView("survey");
+    focusWorkspace();
+  }
+
+  function openSettingsPage() {
+    setResult(null);
+    setSurveyResult(null);
+    setLiveTrace([]);
+    setStreamState(null);
+    setActionMessage("");
+    setError("");
+    setSettingsError("");
+    setSettingsMessage("");
+    setSidebarOpen(false);
+    setActiveView("settings");
+    refreshSettings();
+    focusWorkspace();
+  }
+
+  async function openXhsLoginPage(options = {}) {
+    const { continueAfterLogin = false } = options;
+    setResult(null);
+    setSurveyResult(null);
+    setLiveTrace([]);
+    setStreamState(null);
+    setActionMessage("");
+    setError("");
+    setXhsLoginError("");
+    setXhsQrStatus(null);
+    setSidebarOpen(false);
+    pendingXhsLaunchRef.current = continueAfterLogin;
+    xhsAutoContinuingRef.current = false;
+    setActiveView("xhs-login");
+    focusWorkspace();
+    await refreshXhsStatus();
+    await refreshXhsQrCode();
+  }
+
+  useEffect(() => {
+    if (activeView !== "xhs-login" || xhsStatus?.logged_in || !xhsQrCode?.qr_id || !xhsQrCode?.code) {
+      return undefined;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const nextStatus = await checkXhsQrCodeStatus({ qr_id: xhsQrCode.qr_id, code: xhsQrCode.code });
+        if (cancelled) return;
+        setXhsQrStatus(nextStatus);
+        if (nextStatus.logged_in) {
+          setXhsStatus((current) => ({ ...(current || {}), ...nextStatus, logged_in: true, login_required: false }));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setXhsLoginError(err.message);
+          setXhsQrStatus({ status: "check_failed", logged_in: false, login_required: true, message: err.message });
+        }
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeView, xhsQrCode?.qr_id, xhsQrCode?.code, xhsStatus?.logged_in]);
+
+  useEffect(() => {
+    if (activeView !== "xhs-login" || !xhsStatus?.logged_in || !pendingXhsLaunchRef.current || xhsAutoContinuingRef.current) {
+      return;
+    }
+    xhsAutoContinuingRef.current = true;
+    setActionMessage("检测到小红书已登录，正在继续分析...");
+    launchTask({ skipXhsLoginCheck: true }).finally(() => {
+      pendingXhsLaunchRef.current = false;
+      xhsAutoContinuingRef.current = false;
+    });
+  }, [activeView, xhsStatus?.logged_in]);
 
   function focusWorkspace() {
     window.setTimeout(() => {
@@ -223,12 +465,20 @@ function App() {
     focusWorkspace();
   }
 
-  async function launchTask() {
+  async function launchTask(options = {}) {
+    const { skipXhsLoginCheck = false } = options;
     if (!taskForm) return;
     const latestProviderStatus = await refreshProviderStatus();
     if (!latestProviderStatus?.workflow_ready) {
       setError(latestProviderStatus?.issues?.join(" ") || "真实 Provider 尚未就绪。");
       return;
+    }
+    if (!skipXhsLoginCheck && taskNeedsXhsLogin(taskForm)) {
+      const status = await refreshXhsStatus();
+      if (!status?.logged_in) {
+        await openXhsLoginPage({ continueAfterLogin: true });
+        return;
+      }
     }
     setLoading(true);
     setError("");
@@ -251,6 +501,89 @@ function App() {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function refreshXhsStatus() {
+    setXhsLoginError("");
+    try {
+      const status = await getXhsStatus();
+      setXhsStatus(status);
+      return status;
+    } catch (err) {
+      setXhsLoginError(err.message);
+      return null;
+    }
+  }
+
+  async function refreshXhsQrCode() {
+    setXhsLoginLoading(true);
+    setXhsLoginError("");
+    setXhsQrStatus({ status: "qrcode_refreshing", logged_in: false, login_required: true, message: "正在获取新的登录二维码..." });
+    try {
+      const nextQrCode = await getXhsLoginQrCode();
+      setXhsQrCode(nextQrCode);
+      setXhsQrStatus({
+        status: "qrcode_ready",
+        logged_in: false,
+        login_required: true,
+        message: nextQrCode.qr_id && nextQrCode.code ? "已生成二维码。扫码后系统会自动检查，也可以点击按钮立即检查。" : "已生成二维码，但 MCP 未返回 qr_id/code；点击检查会改为刷新登录状态。",
+      });
+      return nextQrCode;
+    } catch (err) {
+      setXhsLoginError(err.message);
+      setXhsQrStatus({ status: "qrcode_failed", logged_in: false, login_required: true, message: err.message });
+      return null;
+    } finally {
+      setXhsLoginLoading(false);
+    }
+  }
+
+  async function checkCurrentXhsQrCode() {
+    setXhsLoginLoading(true);
+    setXhsLoginError("");
+    setXhsQrStatus({ status: "checking", logged_in: false, login_required: true, message: "正在检查扫码结果..." });
+    try {
+      if (xhsQrCode?.qr_id && xhsQrCode?.code) {
+        const nextStatus = await checkXhsQrCodeStatus({ qr_id: xhsQrCode.qr_id, code: xhsQrCode.code });
+        setXhsQrStatus(nextStatus);
+        if (nextStatus.logged_in) {
+          setXhsStatus((current) => ({ ...(current || {}), ...nextStatus, logged_in: true, login_required: false }));
+          return nextStatus;
+        }
+      }
+      const nextStatus = await refreshXhsStatus();
+      setXhsQrStatus({
+        ...(nextStatus || {}),
+        status: nextStatus?.logged_in ? "logged_in" : "status_checked",
+        logged_in: Boolean(nextStatus?.logged_in),
+        login_required: !nextStatus?.logged_in,
+        message: nextStatus?.logged_in ? "已确认小红书登录成功。" : nextStatus?.message || "已检查登录状态，但 MCP 仍未确认登录。",
+      });
+      return nextStatus;
+    } catch (err) {
+      setXhsLoginError(err.message);
+      setXhsQrStatus({ status: "check_failed", logged_in: false, login_required: true, message: err.message });
+      return null;
+    } finally {
+      setXhsLoginLoading(false);
+    }
+  }
+
+  async function launchSurveyGeneration() {
+    setSurveyLoading(true);
+    setSurveyError("");
+    setSurveyResult(null);
+    try {
+      const generated = await generateUserResearchSurvey({
+        ...surveyForm,
+        question_count: Number(surveyForm.question_count) || 12,
+      });
+      setSurveyResult(generated);
+    } catch (err) {
+      setSurveyError(err.message);
+    } finally {
+      setSurveyLoading(false);
     }
   }
 
@@ -327,6 +660,123 @@ function App() {
     }
   }
 
+  async function refreshSettings() {
+    setSettingsLoading(true);
+    try {
+      const settings = await getAppSettings();
+      setSettingsMeta(settings);
+      setSettingsForm(settingsFormFromPayload(settings));
+      await refreshSkillCatalog();
+      if (settings.provider_status) {
+        setProviderStatus(settings.provider_status);
+      }
+      return settings;
+    } catch (err) {
+      setSettingsError(err.message);
+      return null;
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
+
+  async function refreshSkillCatalog() {
+    setSkillLoading(true);
+    setSkillError("");
+    try {
+      const catalog = await getSkillCatalog();
+      setSkillCatalog(catalog);
+      setSkillSelections(assignmentsToSelections(catalog.assignments || []));
+      return catalog;
+    } catch (err) {
+      setSkillError(err.message);
+      return null;
+    } finally {
+      setSkillLoading(false);
+    }
+  }
+
+  async function handleSyncDefaultSkills() {
+    setSkillSaving(true);
+    setSkillError("");
+    setSkillMessage("");
+    try {
+      const response = await syncDefaultSkills();
+      const warningText = response.warnings?.length ? `，${response.warnings.length} 个候选同步失败` : "";
+      setSkillMessage(`默认 PM skill 候选已同步 ${response.imported?.length || 0} 个${warningText}。`);
+      await refreshSkillCatalog();
+    } catch (err) {
+      setSkillError(err.message);
+    } finally {
+      setSkillSaving(false);
+    }
+  }
+
+  async function handleImportGithubSkill() {
+    const githubUrl = skillImportUrl.trim();
+    if (!githubUrl) {
+      setSkillError("请输入 GitHub raw、blob 或 folder/tree URL。");
+      return;
+    }
+    setSkillSaving(true);
+    setSkillError("");
+    setSkillMessage("");
+    try {
+      await importGithubSkill({ github_url: githubUrl });
+      setSkillImportUrl("");
+      setSkillMessage("Skill Markdown 已导入。");
+      await refreshSkillCatalog();
+    } catch (err) {
+      setSkillError(err.message);
+    } finally {
+      setSkillSaving(false);
+    }
+  }
+
+  async function handleSaveSkillAssignments() {
+    setSkillSaving(true);
+    setSkillError("");
+    setSkillMessage("");
+    try {
+      const assignments = (skillCatalog.slots || []).map((slot) => {
+        const skillId = skillSelections[slot.slot] || "";
+        const skill = (skillCatalog.skills || []).find((item) => item.skill_id === skillId);
+        return {
+          slot: slot.slot,
+          skill_id: skillId,
+          enabled: Boolean(skillId),
+          license_acknowledged: skill?.requires_license_ack ? skillLicenseAck : true,
+        };
+      });
+      await updateSkillAssignments(assignments);
+      setSkillMessage("PM Skill 环节映射已保存。");
+      await refreshSkillCatalog();
+    } catch (err) {
+      setSkillError(err.message);
+    } finally {
+      setSkillSaving(false);
+    }
+  }
+
+  async function saveSettings() {
+    setSettingsSaving(true);
+    setSettingsError("");
+    setSettingsMessage("");
+    try {
+      const payload = await updateAppSettings(settingsForm);
+      setSettingsMeta(payload);
+      setSettingsForm(settingsFormFromPayload(payload));
+      if (payload.provider_status) {
+        setProviderStatus(payload.provider_status);
+      }
+      setSettingsMessage("设置已加密保存到本地数据库。");
+      await refreshProviderStatus();
+    } catch (err) {
+      setSettingsError(err.message);
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
   async function loadRecentTask(taskId) {
     setError("");
     setActionMessage("");
@@ -382,6 +832,14 @@ function App() {
           <Play size={16} />
           新建真实分析
         </button>
+        <button type="button" className="secondary-nav-button" onClick={openSurveyPage}>
+          <ClipboardList size={16} />
+          用户调研问卷
+        </button>
+        <button type="button" className="secondary-nav-button" onClick={openSettingsPage}>
+          <Settings size={16} />
+          系统设置
+        </button>
 
         <RecentRunsPanel
           tasks={recentTasks}
@@ -397,12 +855,12 @@ function App() {
       <section id="main-workspace" className={`workspace ${result ? "has-result" : ""}`} ref={workspaceRef} tabIndex="-1">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{result ? "分析结果工作台" : "V1.2.1 产品化闭环"}</p>
-            <h1>{result ? `${result.task.config.target_product} 竞品分析` : "以证据为核心的竞品分析系统，支持检索、结论复核与可信度追踪。"}</h1>
+            <p className="eyebrow">{result ? "分析结果工作台" : activeView === "settings" ? "系统设置" : activeView === "survey" ? "用户调研问卷生成" : activeView === "xhs-login" ? "小红书登录引导" : "V1.2.1 产品化闭环"}</p>
+            <h1>{result ? `${result.task.config.target_product} 竞品分析` : activeView === "settings" ? "管理 API Key、LLM Provider 和搜索 Provider。" : activeView === "survey" ? "生成可直接投放和复盘的用户调研问卷。" : activeView === "xhs-login" ? "扫码登录小红书后继续舆情采集。" : "以证据为核心的竞品分析系统，支持检索、结论复核与可信度追踪。"}</h1>
           </div>
           <div className="status-pill">
             <Activity size={16} />
-            {activeView === "config" ? "配置中" : result ? "已完成" : loading ? "运行中" : "就绪"}
+            {activeView === "settings" ? settingsSaving ? "保存中" : "设置" : activeView === "survey" ? surveyLoading ? "生成中" : "问卷" : activeView === "xhs-login" ? xhsStatus?.logged_in ? "已登录" : "待登录" : activeView === "config" ? "配置中" : result ? "已完成" : loading ? "运行中" : "就绪"}
           </div>
         </header>
 
@@ -420,7 +878,60 @@ function App() {
           </>
         )}
 
-        {activeView === "config" ? (
+        {activeView === "settings" ? (
+          <SettingsView
+            form={settingsForm}
+            setForm={setSettingsForm}
+            meta={settingsMeta}
+            loading={settingsLoading}
+            saving={settingsSaving}
+            error={settingsError}
+            message={settingsMessage}
+            onRefresh={refreshSettings}
+            onSave={saveSettings}
+            skillCatalog={skillCatalog}
+            skillSelections={skillSelections}
+            setSkillSelections={setSkillSelections}
+            skillImportUrl={skillImportUrl}
+            setSkillImportUrl={setSkillImportUrl}
+            skillLicenseAck={skillLicenseAck}
+            setSkillLicenseAck={setSkillLicenseAck}
+            skillLoading={skillLoading}
+            skillSaving={skillSaving}
+            skillError={skillError}
+            skillMessage={skillMessage}
+            onSyncDefaultSkills={handleSyncDefaultSkills}
+            onImportGithubSkill={handleImportGithubSkill}
+            onSaveSkillAssignments={handleSaveSkillAssignments}
+          />
+        ) : activeView === "survey" ? (
+          <SurveyGeneratorView
+            form={surveyForm}
+            setForm={setSurveyForm}
+            result={surveyResult}
+            loading={surveyLoading}
+            error={surveyError}
+            onGenerate={launchSurveyGeneration}
+            onReset={() => {
+              setSurveyForm({ ...emptySurveyForm });
+              setSurveyResult(null);
+              setSurveyError("");
+            }}
+          />
+        ) : activeView === "xhs-login" ? (
+          <XhsLoginView
+            status={xhsStatus}
+            qrStatus={xhsQrStatus}
+            qrcode={xhsQrCode}
+            loading={xhsLoginLoading}
+            error={xhsLoginError}
+            onRefreshStatus={refreshXhsStatus}
+            onRefreshQrCode={refreshXhsQrCode}
+            onCheckQrCode={checkCurrentXhsQrCode}
+            onBack={openConfigPage}
+            onContinue={launchTask}
+          />
+        ) : activeView === "config" ? (
           <ConfigView
             form={taskForm}
             setForm={setTaskForm}
@@ -431,7 +942,7 @@ function App() {
             onRun={launchTask}
             providerStatus={providerStatus}
             providerLoading={providerLoading}
-            onReset={() => setTaskForm({ ...emptyTaskForm })}
+            onReset={() => setTaskForm(createEmptyTaskForm())}
           />
         ) : result ? (
           <>
@@ -443,6 +954,7 @@ function App() {
                 ["plan", "检索计划", ListChecks],
                 ["matrix", "对比矩阵", Table2],
                 ["claims", "证据与结论", Database],
+                ["social", "舆情", Search],
                 ["report", "最终报告", FileText],
                 ["trace", "运行详情", GitBranch],
               ].map(([id, label, Icon]) => (
@@ -457,6 +969,7 @@ function App() {
             {activeTab === "plan" && <SearchPlanView result={result} />}
             {activeTab === "matrix" && <MatrixView result={result} />}
             {activeTab === "claims" && <ClaimsView result={result} onExcludeEvidence={handleEvidenceExclude} onRestoreEvidence={handleEvidenceRestore} />}
+            {activeTab === "social" && <SocialListeningView result={result} />}
             {activeTab === "report" && <ReportView result={result} />}
           </>
         ) : (
@@ -500,6 +1013,10 @@ function RecentRunsPanel({ tasks, activeTaskId, loading, onRefresh, onSelect }) 
 }
 
 function formToConfig(form) {
+  const social = form.socialListening || emptyTaskForm.socialListening;
+  const xhs = social.platforms?.xiaohongshu || {};
+  const weibo = social.platforms?.weibo || {};
+  const douyin = social.platforms?.douyin || {};
   return {
     domain: form.domain,
     target_product: form.target_product.trim(),
@@ -509,7 +1026,40 @@ function formToConfig(form) {
     evidence_strictness: form.evidence_strictness,
     audience: form.audience,
     notes: form.notes || "",
+    social_listening: {
+      enabled: Boolean(social.enabled),
+      manual_xhs_summary: social.manual_xhs_summary || "",
+      manual_source_urls: splitList(social.manual_source_urls || ""),
+      platforms: [
+        {
+          platform: "xiaohongshu",
+          enabled: Boolean(social.enabled && xhs.enabled),
+          keywords: splitList(xhs.keywordsText || ""),
+          sort_by: xhs.sort_by || "综合",
+          note_type: xhs.note_type || "不限",
+          publish_time: xhs.publish_time || "一周内",
+          max_posts_per_keyword: Number(xhs.max_posts_per_keyword) || 15,
+          fetch_comments: Boolean(xhs.fetch_comments),
+          max_comments_per_post: Number(xhs.max_comments_per_post) || 30,
+        },
+        {
+          platform: "weibo",
+          enabled: Boolean(social.enabled && weibo.enabled),
+          keywords: splitList(weibo.keywordsText || ""),
+        },
+        {
+          platform: "douyin",
+          enabled: Boolean(social.enabled && douyin.enabled),
+          keywords: splitList(douyin.keywordsText || ""),
+        },
+      ],
+    },
   };
+}
+
+function taskNeedsXhsLogin(form) {
+  const social = form.socialListening || {};
+  return Boolean(social.enabled && social.platforms?.xiaohongshu?.enabled);
 }
 
 function splitList(value) {
@@ -620,6 +1170,10 @@ function TaskForm({ form, setForm, validationErrors = [] }) {
   const goalsMissing = goals.length === 0;
   const goalWordCount = countGoalWords(form.goalsText);
   const goalsTooLong = goalWordCount > maxAnalysisGoalWords;
+  const social = form.socialListening || createEmptyTaskForm().socialListening;
+  const xhsSocial = social.platforms?.xiaohongshu || createEmptyTaskForm().socialListening.platforms.xiaohongshu;
+  const weiboSocial = social.platforms?.weibo || createEmptyTaskForm().socialListening.platforms.weibo;
+  const douyinSocial = social.platforms?.douyin || createEmptyTaskForm().socialListening.platforms.douyin;
   const availableSuggestions = recommendations
     .filter((item) => normalizeName(item) !== normalizeName(form.target_product))
     .filter((item) => !normalizedCompetitors.includes(normalizeName(item)))
@@ -685,6 +1239,39 @@ function TaskForm({ form, setForm, validationErrors = [] }) {
       ...current,
       competitors: current.competitors.filter((item) => normalizeName(item) !== normalizeName(value)),
     }));
+  }
+
+  function updateSocial(patch) {
+    setForm((current) => ({
+      ...current,
+      socialListening: {
+        ...createEmptyTaskForm().socialListening,
+        ...(current.socialListening || {}),
+        ...patch,
+      },
+    }));
+  }
+
+  function updateSocialPlatform(platform, patch) {
+    setForm((current) => {
+      const base = createEmptyTaskForm().socialListening;
+      const currentSocial = { ...base, ...(current.socialListening || {}) };
+      return {
+        ...current,
+        socialListening: {
+          ...currentSocial,
+          platforms: {
+            ...base.platforms,
+            ...(currentSocial.platforms || {}),
+            [platform]: {
+              ...base.platforms[platform],
+              ...(currentSocial.platforms?.[platform] || {}),
+              ...patch,
+            },
+          },
+        },
+      };
+    });
   }
 
   function handleCompetitorKeyDown(event) {
@@ -851,6 +1438,63 @@ function TaskForm({ form, setForm, validationErrors = [] }) {
         <span>补充要求</span>
         <textarea value={form.notes || ""} onChange={(event) => update({ notes: event.target.value })} rows={3} placeholder="可选：指定地区、时间范围、重点来源或输出格式。" />
       </label>
+      <section className="social-config">
+        <div className="panel-heading split">
+          <span><Search size={16} />社媒舆情采集</span>
+          <ToggleField label="启用舆情" checked={Boolean(social.enabled)} onChange={(checked) => updateSocial({ enabled: checked })} />
+        </div>
+        <p className="field-help">小红书默认通过 xiaohongshu-mcp 只读采集；未登录时会先进入扫码登录引导。微博和抖音先作为占位平台，不阻塞小红书分析。</p>
+        <div className="platform-grid">
+          <article className={`platform-box ${xhsSocial.enabled ? "active" : ""}`}>
+            <ToggleField label="小红书" checked={Boolean(xhsSocial.enabled)} onChange={(checked) => updateSocialPlatform("xiaohongshu", { enabled: checked })} />
+            <label>
+              <span>关键词</span>
+              <textarea value={xhsSocial.keywordsText || ""} onChange={(event) => updateSocialPlatform("xiaohongshu", { keywordsText: event.target.value })} rows={3} placeholder="留空则使用目标产品和竞品；也可输入品牌词、痛点词、场景词。" />
+            </label>
+            <div className="form-row">
+              <label>
+                <span>排序</span>
+                <select value={xhsSocial.sort_by || "综合"} onChange={(event) => updateSocialPlatform("xiaohongshu", { sort_by: event.target.value })}>
+                  {["综合", "最新", "最多点赞", "最多评论", "最多收藏"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>时间</span>
+                <select value={xhsSocial.publish_time || "一周内"} onChange={(event) => updateSocialPlatform("xiaohongshu", { publish_time: event.target.value })}>
+                  {["不限", "一天内", "一周内", "半年内"].map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+              </label>
+            </div>
+            <div className="form-row">
+              <label>
+                <span>每词笔记数</span>
+                <input type="number" min="1" max="50" value={xhsSocial.max_posts_per_keyword} onChange={(event) => updateSocialPlatform("xiaohongshu", { max_posts_per_keyword: event.target.value })} />
+              </label>
+              <label>
+                <span>每篇评论数</span>
+                <input type="number" min="0" max="100" value={xhsSocial.max_comments_per_post} onChange={(event) => updateSocialPlatform("xiaohongshu", { max_comments_per_post: event.target.value })} />
+              </label>
+            </div>
+            <ToggleField label="拉取评论" checked={Boolean(xhsSocial.fetch_comments)} onChange={(checked) => updateSocialPlatform("xiaohongshu", { fetch_comments: checked })} />
+          </article>
+          <article className={`platform-box ${weiboSocial.enabled ? "active" : ""}`}>
+            <ToggleField label="微博（占位）" checked={Boolean(weiboSocial.enabled)} onChange={(checked) => updateSocialPlatform("weibo", { enabled: checked })} />
+            <textarea value={weiboSocial.keywordsText || ""} onChange={(event) => updateSocialPlatform("weibo", { keywordsText: event.target.value })} rows={3} placeholder="可选关键词；当前会生成暂不可用工单。" />
+          </article>
+          <article className={`platform-box ${douyinSocial.enabled ? "active" : ""}`}>
+            <ToggleField label="抖音（占位）" checked={Boolean(douyinSocial.enabled)} onChange={(checked) => updateSocialPlatform("douyin", { enabled: checked })} />
+            <textarea value={douyinSocial.keywordsText || ""} onChange={(event) => updateSocialPlatform("douyin", { keywordsText: event.target.value })} rows={3} placeholder="可选关键词；当前会生成暂不可用工单。" />
+          </article>
+        </div>
+        <label>
+          <span>小红书补充备注</span>
+          <textarea value={social.manual_xhs_summary || ""} onChange={(event) => updateSocial({ manual_xhs_summary: event.target.value })} rows={4} placeholder="可选补充背景；启用小红书平台时，系统仍会要求 MCP 登录并真实搜索、抓取帖子和评论。" />
+        </label>
+        <label>
+          <span>样本链接</span>
+          <textarea value={social.manual_source_urls || ""} onChange={(event) => updateSocial({ manual_source_urls: event.target.value })} rows={2} placeholder="可选：每行一个小红书样本链接。" />
+        </label>
+      </section>
       {validationErrors.length > 0 && (
         <div className="validation-summary" role="alert">
           <strong>还需要完成 {validationErrors.length} 项配置</strong>
@@ -909,6 +1553,806 @@ function ConfigView({ form, setForm, loading, invalid, validationErrors, error, 
   );
 }
 
+function settingsFormFromPayload(payload) {
+  const values = payload?.values || {};
+  return {
+    ...emptySettingsForm,
+    ...values,
+    ANYSEARCH_API_KEY: "",
+    DEEPSEEK_API_KEY: "",
+    SEED_API_KEY: "",
+    LIGHTWEIGHT_SEED_API_KEY: "",
+    ANYSEARCH_MAX_RESULTS: Number(values.ANYSEARCH_MAX_RESULTS || emptySettingsForm.ANYSEARCH_MAX_RESULTS),
+    USE_MOCK_SEARCH: Boolean(values.USE_MOCK_SEARCH),
+    USE_MOCK_LLM: Boolean(values.USE_MOCK_LLM),
+    ALLOW_PROVIDER_FALLBACK: Boolean(values.ALLOW_PROVIDER_FALLBACK),
+    ALLOW_EMPTY_SEARCH_FALLBACK: Boolean(values.ALLOW_EMPTY_SEARCH_FALLBACK),
+  };
+}
+
+function assignmentsToSelections(assignments) {
+  return Object.fromEntries(
+    (assignments || []).map((assignment) => [
+      assignment.slot,
+      assignment.enabled ? assignment.skill_id || "" : "",
+    ])
+  );
+}
+
+function SettingsView({
+  form,
+  setForm,
+  meta,
+  loading,
+  saving,
+  error,
+  message,
+  onRefresh,
+  onSave,
+  skillCatalog,
+  skillSelections,
+  setSkillSelections,
+  skillImportUrl,
+  setSkillImportUrl,
+  skillLicenseAck,
+  setSkillLicenseAck,
+  skillLoading,
+  skillSaving,
+  skillError,
+  skillMessage,
+  onSyncDefaultSkills,
+  onImportGithubSkill,
+  onSaveSkillAssignments,
+}) {
+  const configured = meta?.api_keys || {};
+  const providerStatus = meta?.provider_status;
+  const update = (patch) => setForm((current) => ({ ...current, ...patch }));
+  const isAnySearch = form.SEARCH_PROVIDER === "anysearch";
+  const isDeepSeek = form.LLM_PROVIDER === "deepseek";
+  const isSeed = form.LLM_PROVIDER === "seed";
+  const usesSeedLightweight = form.LIGHTWEIGHT_LLM_PROVIDER === "seed";
+  const invalid = !form.SEARCH_PROVIDER || !form.LLM_PROVIDER || (isAnySearch && !form.ANYSEARCH_BASE_URL.trim()) || (isDeepSeek && !form.DEEPSEEK_BASE_URL.trim()) || (isDeepSeek && !form.DEEPSEEK_MODEL.trim()) || (isSeed && (!form.SEED_BASE_URL.trim() || !form.SEED_MODEL.trim())) || (usesSeedLightweight && (!form.LIGHTWEIGHT_SEED_BASE_URL.trim() || !form.LIGHTWEIGHT_SEED_MODEL.trim()));
+  const skills = skillCatalog?.skills || [];
+  const slots = skillCatalog?.slots || [];
+  const selectedSkills = slots
+    .map((slot) => skills.find((skill) => skill.skill_id === skillSelections[slot.slot]))
+    .filter(Boolean);
+  const selectedRequiresLicenseAck = selectedSkills.some((skill) => skill.requires_license_ack);
+
+  return (
+    <section className="settings-page">
+      <div className="config-head">
+        <div>
+          <p className="eyebrow">Settings</p>
+          <h2>Provider 与密钥配置</h2>
+          <p>配置会加密写入后端 SQLite 数据库。API Key 只显示配置状态，保存后输入框会自动清空。</p>
+          <span className={`template-source ${providerStatus?.workflow_ready ? "ready" : "blocked"}`}>
+            {loading ? "正在读取设置..." : providerStatus?.workflow_ready ? "真实 Provider 已就绪" : "真实 Provider 未就绪"}
+          </span>
+        </div>
+        <div className="config-actions">
+          <button type="button" className="secondary-button" onClick={onRefresh} disabled={loading || saving}>
+            <RefreshCw size={16} />
+            刷新
+          </button>
+          <button type="button" className="run-button" onClick={onSave} disabled={saving || invalid}>
+            <ShieldCheck size={17} />
+            {saving ? "正在保存..." : "加密保存"}
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-grid">
+        <section className="panel settings-panel">
+          <div className="panel-heading">
+            <Search size={16} />
+            <span>搜索 Provider</span>
+          </div>
+          <div className="form-row">
+            <label>
+              <span>搜索供应商</span>
+              <select value={form.SEARCH_PROVIDER} onChange={(event) => update({ SEARCH_PROVIDER: event.target.value })}>
+                <option value="anysearch">AnySearch</option>
+                <option value="duckduckgo">DuckDuckGo</option>
+              </select>
+            </label>
+            <label>
+              <span>最大结果数</span>
+              <input type="number" min="1" max="10" value={form.ANYSEARCH_MAX_RESULTS} onChange={(event) => update({ ANYSEARCH_MAX_RESULTS: event.target.value })} />
+            </label>
+          </div>
+          {isAnySearch && (
+            <>
+              <SecretField label="AnySearch API Key" configured={configured.ANYSEARCH_API_KEY} value={form.ANYSEARCH_API_KEY} onChange={(value) => update({ ANYSEARCH_API_KEY: value })} />
+              <label>
+                <span>AnySearch Base URL</span>
+                <input value={form.ANYSEARCH_BASE_URL} onChange={(event) => update({ ANYSEARCH_BASE_URL: event.target.value })} />
+              </label>
+              <label>
+                <span>内容类型</span>
+                <input value={form.ANYSEARCH_CONTENT_TYPES} onChange={(event) => update({ ANYSEARCH_CONTENT_TYPES: event.target.value })} placeholder="可选：news,docs,web" />
+              </label>
+            </>
+          )}
+        </section>
+
+        <section className="panel settings-panel">
+          <div className="panel-heading">
+            <KeyRound size={16} />
+            <span>LLM Provider</span>
+          </div>
+          <div className="form-row">
+            <label>
+              <span>主 LLM 供应商</span>
+              <select value={form.LLM_PROVIDER} onChange={(event) => update({ LLM_PROVIDER: event.target.value })}>
+                <option value="deepseek">DeepSeek</option>
+                <option value="seed">Seed</option>
+              </select>
+            </label>
+            <label>
+              <span>轻量 LLM</span>
+              <select value={form.LIGHTWEIGHT_LLM_PROVIDER} onChange={(event) => update({ LIGHTWEIGHT_LLM_PROVIDER: event.target.value })}>
+                <option value="deepseek">DeepSeek</option>
+                <option value="seed">Seed</option>
+                <option value="mock">Mock</option>
+              </select>
+            </label>
+          </div>
+          <SecretField label="DeepSeek API Key" configured={configured.DEEPSEEK_API_KEY} value={form.DEEPSEEK_API_KEY} onChange={(value) => update({ DEEPSEEK_API_KEY: value })} />
+          <div className="form-row">
+            <label>
+              <span>DeepSeek Base URL</span>
+              <input value={form.DEEPSEEK_BASE_URL} onChange={(event) => update({ DEEPSEEK_BASE_URL: event.target.value })} />
+            </label>
+            <label>
+              <span>DeepSeek Model</span>
+              <input value={form.DEEPSEEK_MODEL} onChange={(event) => update({ DEEPSEEK_MODEL: event.target.value })} />
+            </label>
+          </div>
+          {(isSeed || usesSeedLightweight) && (
+            <>
+              <SecretField label="Seed API Key" configured={configured.SEED_API_KEY} value={form.SEED_API_KEY} onChange={(value) => update({ SEED_API_KEY: value })} />
+              <div className="form-row">
+                <label>
+                  <span>Seed Base URL</span>
+                  <input value={form.SEED_BASE_URL} onChange={(event) => update({ SEED_BASE_URL: event.target.value })} />
+                </label>
+                <label>
+                  <span>Seed Model</span>
+                  <input value={form.SEED_MODEL} onChange={(event) => update({ SEED_MODEL: event.target.value })} />
+                </label>
+              </div>
+            </>
+          )}
+          {usesSeedLightweight && (
+            <>
+              <SecretField label="轻量 Seed API Key" configured={configured.LIGHTWEIGHT_SEED_API_KEY} value={form.LIGHTWEIGHT_SEED_API_KEY} onChange={(value) => update({ LIGHTWEIGHT_SEED_API_KEY: value })} />
+              <div className="form-row">
+                <label>
+                  <span>轻量 Seed Base URL</span>
+                  <input value={form.LIGHTWEIGHT_SEED_BASE_URL} onChange={(event) => update({ LIGHTWEIGHT_SEED_BASE_URL: event.target.value })} />
+                </label>
+                <label>
+                  <span>轻量 Seed Model</span>
+                  <input value={form.LIGHTWEIGHT_SEED_MODEL} onChange={(event) => update({ LIGHTWEIGHT_SEED_MODEL: event.target.value })} />
+                </label>
+              </div>
+            </>
+          )}
+        </section>
+      </div>
+
+      <section className="panel settings-panel">
+        <div className="panel-heading">
+          <ShieldCheck size={16} />
+          <span>运行开关</span>
+        </div>
+        <div className="toggle-grid">
+          <ToggleField label="使用 Mock 搜索" checked={form.USE_MOCK_SEARCH} onChange={(value) => update({ USE_MOCK_SEARCH: value })} />
+          <ToggleField label="使用 Mock LLM" checked={form.USE_MOCK_LLM} onChange={(value) => update({ USE_MOCK_LLM: value })} />
+          <ToggleField label="允许 Provider 降级" checked={form.ALLOW_PROVIDER_FALLBACK} onChange={(value) => update({ ALLOW_PROVIDER_FALLBACK: value })} />
+          <ToggleField label="允许空搜索降级" checked={form.ALLOW_EMPTY_SEARCH_FALLBACK} onChange={(value) => update({ ALLOW_EMPTY_SEARCH_FALLBACK: value })} />
+        </div>
+        {providerStatus?.issues?.length > 0 && (
+          <div className="provider-blocker settings-issues" role="alert">
+            <TriangleAlert size={18} />
+            <div>
+              <strong>当前配置仍需处理</strong>
+              {providerStatus.issues.map((issue) => <span key={issue}>{issue}</span>)}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="panel settings-panel pm-skills-panel">
+        <div className="panel-heading split">
+          <span>PM Skills</span>
+          <div className="action-row compact">
+            <button type="button" className="secondary-button" onClick={onSyncDefaultSkills} disabled={skillLoading || skillSaving}>
+              <RefreshCw size={14} />
+              同步默认候选
+            </button>
+            <button type="button" onClick={onSaveSkillAssignments} disabled={skillLoading || skillSaving}>
+              <ShieldCheck size={14} />
+              保存映射
+            </button>
+          </div>
+        </div>
+        <div className="skill-import-row">
+          <label>
+            <span>GitHub Skill URL</span>
+            <input
+              value={skillImportUrl}
+              onChange={(event) => setSkillImportUrl(event.target.value)}
+              placeholder="https://github.com/owner/repo/blob/main/path/SKILL.md"
+            />
+          </label>
+          <button type="button" className="secondary-button" onClick={onImportGithubSkill} disabled={skillSaving || !skillImportUrl.trim()}>
+            <Download size={14} />
+            导入 Markdown
+          </button>
+        </div>
+        <div className="skill-assignment-grid">
+          {slots.map((slot) => {
+            const selectedSkill = skills.find((skill) => skill.skill_id === skillSelections[slot.slot]);
+            return (
+              <label key={slot.slot} className="skill-assignment-row">
+                <span>{slot.title}</span>
+                <select
+                  value={skillSelections[slot.slot] || ""}
+                  onChange={(event) => setSkillSelections((current) => ({ ...current, [slot.slot]: event.target.value }))}
+                >
+                  <option value="">关闭 skill</option>
+                  {skills.map((skill) => (
+                    <option key={`${slot.slot}-${skill.skill_id}`} value={skill.skill_id}>
+                      {skill.name} · {skill.license}
+                    </option>
+                  ))}
+                </select>
+                {selectedSkill && (
+                  <small>
+                    {selectedSkill.repo_url}/{selectedSkill.path}
+                  </small>
+                )}
+              </label>
+            );
+          })}
+        </div>
+        {selectedRequiresLicenseAck && (
+          <label className="toggle-field license-ack">
+            <input type="checkbox" checked={skillLicenseAck} onChange={(event) => setSkillLicenseAck(event.target.checked)} />
+            <span>我确认 CC BY-NC-SA 4.0 skill 仅用于非商业/合规场景，并在报告审计信息中保留来源与许可证。</span>
+          </label>
+        )}
+        <div className="skill-summary">
+          <span>已导入 {skills.length} 个 skill</span>
+          <span>已启用 {selectedSkills.length} 个环节映射</span>
+          {skillLoading && <span>正在读取 PM Skills...</span>}
+        </div>
+        {skillMessage && <p className="success">{skillMessage}</p>}
+        {skillError && <p className="error inline">{skillError}</p>}
+      </section>
+
+      {message && <p className="success">{message}</p>}
+      {error && <p className="error inline">{error}</p>}
+    </section>
+  );
+}
+
+function SecretField({ label, configured, value, onChange }) {
+  return (
+    <label>
+      <span>{label}</span>
+      <input type="password" value={value} onChange={(event) => onChange(event.target.value)} placeholder={configured ? "已配置；留空则保留原密钥" : "请输入 API Key"} autoComplete="off" />
+      <small className={configured ? "secret-state ready" : "secret-state blocked"}>{configured ? "已加密保存" : "尚未配置"}</small>
+    </label>
+  );
+}
+
+function ToggleField({ label, checked, onChange }) {
+  return (
+    <label className="toggle-field">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span>{label}</span>
+    </label>
+  );
+}
+
+function SurveyGeneratorView({ form, setForm, result, loading, error, onGenerate, onReset }) {
+  const update = (patch) => setForm((current) => ({ ...current, ...patch }));
+  const invalid = !form.product_name.trim() || !form.research_goal.trim() || !form.target_users.trim();
+  const questionCount = Math.min(Math.max(Number(form.question_count) || 12, 6), 30);
+  return (
+    <section className="survey-page">
+      <div className="config-head">
+        <div>
+          <p className="eyebrow">SurveyGo Skill · MIT</p>
+          <h2>用户调研问卷生成</h2>
+          <p>基于已确认 MIT 协议的 SurveyGo Agent Skill 结构，生成筛选题、量表题、开放题和分析计划。</p>
+          <span className="template-source ready">来源：rendis/surveygo · MIT License</span>
+        </div>
+        <div className="config-actions">
+          <button type="button" className="secondary-button" onClick={onReset} disabled={loading}>清空</button>
+          <button type="button" className="run-button" onClick={onGenerate} disabled={loading || invalid} title={invalid ? "请填写产品、调研目标和目标用户" : "生成问卷"}>
+            <Sparkles size={17} />
+            {loading ? "正在生成..." : "生成问卷"}
+          </button>
+        </div>
+      </div>
+
+      <section className="panel task-form survey-form">
+        <div className="panel-heading">
+          <ClipboardList size={16} />
+          <span>调研输入</span>
+        </div>
+        <div className="form-row">
+          <label>
+            <span>产品 / 方案</span>
+            <input value={form.product_name} onChange={(event) => update({ product_name: event.target.value })} placeholder="例如：Cursor 企业版" />
+          </label>
+          <label>
+            <span>目标用户</span>
+            <input value={form.target_users} onChange={(event) => update({ target_users: event.target.value })} placeholder="例如：10-100 人研发团队的工程负责人" />
+          </label>
+        </div>
+        <label>
+          <span>调研目标</span>
+          <textarea value={form.research_goal} onChange={(event) => update({ research_goal: event.target.value })} rows={4} placeholder="例如：验证团队是否愿意为 AI 编程工具付费、主要采购顾虑、当前替代方案和高频使用场景。" />
+        </label>
+        <label>
+          <span>场景 / 限制</span>
+          <textarea value={form.scenario} onChange={(event) => update({ scenario: event.target.value })} rows={3} placeholder="可选：指定地区、样本来源、调研渠道、希望避开的题型或必须覆盖的假设。" />
+        </label>
+        <div className="form-row">
+          <label>
+            <span>题目数量</span>
+            <input type="number" min="6" max="30" value={form.question_count} onChange={(event) => update({ question_count: event.target.value })} />
+          </label>
+          <label>
+            <span>语言</span>
+            <select value={form.language} onChange={(event) => update({ language: event.target.value })}>
+              <option value="zh-CN">中文</option>
+              <option value="en-US">English</option>
+            </select>
+          </label>
+        </div>
+        <p className="field-counter">将生成 {questionCount} 道左右的问题；实际题数会按筛选、量表和开放题结构自动调整。</p>
+        {invalid && <p className="field-warning">请先填写产品、调研目标和目标用户。</p>}
+      </section>
+
+      {error && <p className="error inline">{error}</p>}
+      {result && <SurveyResult result={result} />}
+    </section>
+  );
+}
+
+function SurveyResult({ result }) {
+  const [copied, setCopied] = useState("");
+  async function copyValue(label, value) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+      window.setTimeout(() => setCopied(""), 1600);
+    } catch (_err) {
+      setCopied("");
+    }
+  }
+  const markdown = surveyMarkdown(result);
+  const jsonText = JSON.stringify(result.survey_json || {}, null, 2);
+  return (
+    <section className="survey-result">
+      <div className="overview-head">
+        <div>
+          <h2>{result.title}</h2>
+          <p>{result.research_objective}</p>
+        </div>
+        <div className="overview-actions">
+          <button type="button" className="primary-action" onClick={() => copyValue("markdown", markdown)}><FileText size={16} />复制问卷</button>
+          <button type="button" onClick={() => copyValue("json", jsonText)}><Download size={16} />复制 JSON</button>
+        </div>
+      </div>
+      {copied && <p className="success">已复制 {copied === "json" ? "JSON 草案" : "问卷 Markdown"}。</p>}
+      <div className="survey-meta">
+        <div><span>目标用户</span><strong>{result.target_users}</strong></div>
+        <div><span>题目数量</span><strong>{result.questions?.length || 0}</strong></div>
+        <div><span>Skill</span><strong>{result.skill_source?.name || "surveygo"} · {result.skill_source?.license || "MIT"}</strong></div>
+        <div><span>Provider</span><strong>{result.provider || "-"}</strong></div>
+      </div>
+      <div className="survey-grid">
+        <article className="survey-card">
+          <h3>筛选标准</h3>
+          {(result.screening_criteria || []).map((item) => <p key={item}>{item}</p>)}
+        </article>
+        <article className="survey-card">
+          <h3>分析计划</h3>
+          {(result.analysis_plan || []).map((item) => <p key={item}>{item}</p>)}
+        </article>
+      </div>
+      <section className="question-list">
+        {(result.questions || []).map((question) => (
+          <article className="question-card" key={question.question_id}>
+            <div className="question-head">
+              <span>{question.question_id}</span>
+              <strong>{surveyTypeCopy[question.type] || question.type}</strong>
+              {question.required && <small>必答</small>}
+            </div>
+            <p>{question.text}</p>
+            {question.options?.length > 0 && (
+              <div className="tag-row">{question.options.map((option) => <span key={option}>{option}</span>)}</div>
+            )}
+            {question.purpose && <small className="question-purpose">{question.purpose}</small>}
+          </article>
+        ))}
+      </section>
+      <details className="raw-report">
+        <summary>查看 Survey JSON 草案</summary>
+        <pre>{jsonText}</pre>
+      </details>
+    </section>
+  );
+}
+
+const surveyTypeCopy = {
+  screening: "筛选题",
+  single_choice: "单选",
+  multiple_choice: "多选",
+  likert: "量表",
+  ranking: "排序",
+  open_text: "开放题",
+};
+
+function surveyMarkdown(result) {
+  const lines = [
+    `# ${result.title}`,
+    "",
+    `调研目标：${result.research_objective}`,
+    `目标用户：${result.target_users}`,
+    "",
+    "## 筛选标准",
+    ...(result.screening_criteria || []).map((item) => `- ${item}`),
+    "",
+    "## 问卷题目",
+    ...(result.questions || []).flatMap((question) => {
+      const options = question.options?.length ? question.options.map((option) => `  - ${option}`) : [];
+      return [`${question.question_id}. [${surveyTypeCopy[question.type] || question.type}] ${question.text}`, ...options, `  目的：${question.purpose || "收集调研信息"}`];
+    }),
+    "",
+    "## 分析计划",
+    ...(result.analysis_plan || []).map((item) => `- ${item}`),
+  ];
+  return lines.join("\n");
+}
+
+function XhsLoginView({ status, qrStatus, qrcode, loading, error, onRefreshStatus, onRefreshQrCode, onCheckQrCode, onBack, onContinue }) {
+  const qrSrc = qrcode?.qrcode_base64 ? normalizeQrCode(qrcode.qrcode_base64) : "";
+  const loginMessage = normalizeXhsLoginMessage(qrStatus?.message || status?.message || "请确认 xiaohongshu-mcp 正在 http://localhost:18060/mcp 运行。");
+  const checkMessage = normalizeXhsLoginMessage(qrStatus?.message);
+  return (
+    <section className="xhs-login-page">
+      <div className="config-head">
+        <div>
+          <p className="eyebrow">小红书 MCP 登录</p>
+          <h2>扫码登录后继续采集小红书舆情。</h2>
+          <p>系统会连接本机 xiaohongshu-mcp，只读调用搜索和详情接口。登录状态来自 MCP，本页面不保存账号密码。</p>
+        </div>
+        <div className="config-actions">
+          <button type="button" className="secondary-button" onClick={onBack}>返回配置</button>
+          <button type="button" className="secondary-button" onClick={onRefreshStatus}>刷新状态</button>
+          <button type="button" className="run-button" onClick={onContinue} disabled={!status?.logged_in}>
+            <Play size={17} fill="currentColor" />
+            已登录，继续分析
+          </button>
+        </div>
+      </div>
+      <div className={`provider-blocker ${status?.logged_in ? "ready" : ""}`} role="status">
+        <QrCode size={18} />
+        <div>
+          <strong>{status?.logged_in ? "小红书已登录" : "小红书需要扫码登录"}</strong>
+          <span>{loginMessage}</span>
+          <span>MCP 地址：{status?.mcp_url || qrcode?.mcp_url || "http://localhost:18060/mcp"}</span>
+        </div>
+      </div>
+      <section className="panel xhs-login-card">
+        <div className="panel-heading split">
+          <span><QrCode size={16} />登录二维码</span>
+          <button type="button" className="icon-button" onClick={onRefreshQrCode} disabled={loading} aria-label="刷新登录二维码">
+            <RefreshCw size={14} />
+          </button>
+        </div>
+        {qrSrc ? (
+          <div className="qr-wrap">
+            <img src={qrSrc} alt="小红书登录二维码" />
+            <p>{qrStatus?.logged_in ? "扫码登录已完成。" : checkMessage || (qrcode?.expires_in_seconds ? `二维码约 ${qrcode.expires_in_seconds} 秒后过期；页面会自动检查扫码状态。` : qrcode?.message || "请使用小红书 App 扫码登录。")}</p>
+          </div>
+        ) : (
+          <div className="qr-empty">
+            <QrCode size={42} />
+            <p>{loading ? "正在获取二维码..." : qrcode?.message || "MCP 未返回二维码，请刷新或检查服务日志。"}</p>
+          </div>
+        )}
+        {qrcode?.qrcode_base64 && !qrcode?.qr_id && (
+          <p className="field-warning">当前 MCP 未返回 qr_id/code，无法自动确认扫码结果；扫码后请点击“我已扫码，检查登录”。</p>
+        )}
+        {!qrcode?.qrcode_base64 && qrcode?.qr_url && (
+          <p className="field-warning">
+            MCP 返回了二维码链接但没有图片：<a href={qrcode.qr_url} target="_blank" rel="noreferrer">打开二维码链接</a>
+          </p>
+        )}
+        <div className="login-actions">
+          <button type="button" className="secondary-button" onClick={onRefreshQrCode} disabled={loading}>{loading ? "刷新中" : "重新获取二维码"}</button>
+          <button type="button" className="secondary-button" onClick={onCheckQrCode} disabled={loading}>{loading ? "检查中" : "我已扫码，检查登录"}</button>
+        </div>
+        {(checkMessage || loading) && (
+          <div className={`xhs-check-result ${qrStatus?.logged_in ? "ready" : qrStatus?.status === "check_failed" || qrStatus?.status === "qrcode_failed" ? "failed" : ""}`}>
+            {qrStatus?.logged_in ? <CheckCircle2 size={16} /> : qrStatus?.status === "checking" || loading ? <Activity size={16} /> : <TriangleAlert size={16} />}
+            <span>{loading && qrStatus?.status === "checking" ? "正在检查扫码结果..." : checkMessage || "正在处理小红书登录状态..."}</span>
+          </div>
+        )}
+        {error && <p className="field-warning">登录检查失败：{error}</p>}
+      </section>
+    </section>
+  );
+}
+
+function normalizeQrCode(value) {
+  if (!value) return "";
+  if (value.startsWith("data:image")) return value;
+  return `data:image/png;base64,${value}`;
+}
+
+function normalizeXhsLoginMessage(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const lower = text.toLowerCase();
+  if (lower.includes("waiting for scan")) {
+    return "已检查：还没有检测到扫码确认。请在小红书 App 里完成确认，稍后再点一次。";
+  }
+  if (lower.includes("waiting for confirmation")) {
+    return "已扫码：小红书 App 正在等待你确认登录。请在 App 内点确认后再检查一次。";
+  }
+  if (lower.includes("login successful") || lower.includes("cookies saved") || text.includes("登录成功")) {
+    return "已确认小红书登录成功，Cookie 已保存。";
+  }
+  if (lower.includes("target page") && lower.includes("closed")) {
+    return "MCP 浏览器上下文已关闭。请重新获取二维码后再扫码。";
+  }
+  if (lower.includes("not logged") || text.includes("未登录") || text.includes("没有权限访问")) {
+    return `当前 MCP 仍未登录：${text}`;
+  }
+  return text;
+}
+
+function SocialListeningView({ result }) {
+  const insights = result.social_insights || result.report?.social_insights || [];
+  const posts = result.social_posts || [];
+  const socialEvidence = result.evidence.filter((item) => item.evidence_type === "social_sentiment");
+  const comments = flattenSocialComments(posts);
+  const findings = normalizeSocialFindings(insights, comments);
+  const positiveFindings = findings.filter((item) => item.category === "positive");
+  const issueFindings = findings.filter((item) => item.category !== "positive");
+  const jumpToComment = (commentId) => {
+    const target = document.getElementById(commentAnchorId(commentId));
+    if (!target) return;
+    const details = target.closest("details");
+    if (details) details.open = true;
+    window.requestAnimationFrame(() => target.scrollIntoView({ behavior: "smooth", block: "center" }));
+  };
+  return (
+    <section className="social-view">
+      <div className="section-heading">
+        <h2>社媒舆情洞察</h2>
+        <p>小红书通过 MCP 登录、真实搜索、笔记详情与评论区采集进入证据链；微博和抖音如果暂不可用，会在复核工单中标记。</p>
+      </div>
+      <div className="social-metrics">
+        <div><span>洞察</span><strong>{insights.length}</strong></div>
+        <div><span>样本笔记</span><strong>{posts.length}</strong></div>
+        <div><span>舆情证据</span><strong>{socialEvidence.length}</strong></div>
+      </div>
+      {insights.length ? (
+        <div className="social-insight-list">
+          {insights.map((insight) => (
+            <article className="social-insight" key={insight.insight_id || `${insight.platform}-${insight.summary}`}>
+              <div className="ticket-top">
+                <strong>{socialPlatformCopy[insight.platform] || insight.platform}</strong>
+                <span className={`badge ${insight.status === "collected" || insight.status === "manual" ? "passed" : "blocked"}`}>{socialStatusCopy[insight.status] || insight.status}</span>
+              </div>
+              <p>{insight.summary}</p>
+              <div className="social-tags">
+                {(insight.themes || []).map((item) => <span key={item}>{item}</span>)}
+              </div>
+              <dl className="sentiment-grid">
+                <div><dt>情绪</dt><dd>{sentimentCopy[insight.sentiment?.overall] || insight.sentiment?.overall || "中性"}</dd></div>
+                <div><dt>正向</dt><dd>{insight.sentiment?.positive_count || 0}</dd></div>
+                <div><dt>中性</dt><dd>{insight.sentiment?.neutral_count || 0}</dd></div>
+                <div><dt>负向</dt><dd>{insight.sentiment?.negative_count || 0}</dd></div>
+              </dl>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="empty-warning">当前结果没有社媒洞察。请确认新建配置中启用了小红书舆情，并完成 MCP 登录后重新运行真实搜索与评论采集。</p>
+      )}
+      {findings.length > 0 && (
+        <section className="social-ai-summary">
+          <div className="subsection-heading">
+            <h3>AI 评论总结</h3>
+            <p>先总结评论趋势，再通过 ①② 标注跳转到下方原始评论。</p>
+          </div>
+          <div className="finding-list">
+            {findings.map((finding, index) => (
+              <article className={`finding-card ${finding.category}`} key={finding.finding_id || `${finding.title}-${index}`}>
+                <div className="finding-head">
+                  <span>{findingCategoryCopy[finding.category] || "观察"}</span>
+                  <strong>{finding.title}</strong>
+                </div>
+                <p>{finding.summary}</p>
+                {finding.comment_refs?.length > 0 && (
+                  <div className="comment-ref-row" aria-label="评论引用">
+                    {finding.comment_refs.slice(0, 5).map((commentId, refIndex) => (
+                      <button type="button" key={`${finding.finding_id}-${commentId}`} onClick={() => jumpToComment(commentId)}>
+                        {circledNumber(refIndex)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
+          <div className="balanced-insight-grid">
+            <section>
+              <h4>产品好的地方</h4>
+              {positiveFindings.length ? positiveFindings.map((item) => <p key={`good-${item.finding_id}`}>{item.title}：{item.summary}</p>) : <p>当前样本中正向表达较弱，建议继续增加样本或更换关键词观察。</p>}
+            </section>
+            <section>
+              <h4>痛点、风险与机会</h4>
+              {issueFindings.length ? issueFindings.slice(0, 5).map((item) => <p key={`issue-${item.finding_id}`}>{item.title}：{item.summary}</p>) : <p>当前样本尚未出现明确痛点或风险信号。</p>}
+            </section>
+          </div>
+        </section>
+      )}
+      {posts.length > 0 && (
+        <div className="social-post-list">
+          <h3>代表性样本</h3>
+          {posts.slice(0, 15).map((post) => (
+            <article className="social-post" key={post.post_id}>
+              <div className="ticket-top">
+                <strong>{post.title}</strong>
+                {post.url && <a href={post.url} target="_blank" rel="noreferrer">打开笔记</a>}
+              </div>
+              <p>{post.content || "该笔记没有返回正文摘要。"}</p>
+              <span>点赞 {post.like_count} · 收藏 {post.collect_count} · 评论 {post.comment_count} · 已抓取 {post.comments?.length || 0} 条评论样本</span>
+            </article>
+          ))}
+        </div>
+      )}
+      {comments.length > 0 && (
+        <section className="raw-comment-section">
+          <div className="subsection-heading">
+            <h3>原始评论证据库</h3>
+            <p>共 {comments.length} 条评论样本，按笔记分组；上方引用编号会跳转到这里。</p>
+          </div>
+          <div className="comment-source-list">
+            {posts.slice(0, 15).map((post, postIndex) => (
+              <details className="comment-source-card" key={`comments-${post.post_id}`} open={postIndex === 0}>
+                <summary>
+                  <span>{post.title}</span>
+                  <strong>{post.comments?.length || 0} 条评论</strong>
+                </summary>
+                <div className="raw-comment-list">
+                  {(post.comments || []).map((comment, commentIndex) => {
+                    const fallbackId = `${post.post_id}_c${commentIndex + 1}`;
+                    const commentId = comment.comment_id || fallbackId;
+                    return (
+                      <article className="raw-comment-card" id={commentAnchorId(commentId)} key={`${post.post_id}-${commentId}`}>
+                        <div className="raw-comment-meta">
+                          <strong>{comment.author || `评论 ${commentIndex + 1}`}</strong>
+                          <span>{sentimentCopy[comment.sentiment] || "中性"} · 赞 {comment.like_count || 0}</span>
+                        </div>
+                        <p>{comment.content || "该评论内容为空。"}</p>
+                      </article>
+                    );
+                  })}
+                </div>
+              </details>
+            ))}
+          </div>
+        </section>
+      )}
+    </section>
+  );
+}
+
+function flattenSocialComments(posts = []) {
+  return posts.flatMap((post) => (post.comments || []).map((comment, index) => ({
+    ...comment,
+    comment_id: comment.comment_id || `${post.post_id}_c${index + 1}`,
+    post_id: post.post_id,
+    post_title: post.title,
+  })));
+}
+
+function normalizeSocialFindings(insights = [], comments = []) {
+  const normalized = [];
+  for (const insight of insights) {
+    if (Array.isArray(insight.findings) && insight.findings.length) {
+      for (const finding of insight.findings) {
+        normalized.push({
+          finding_id: finding.finding_id,
+          category: normalizeFindingCategory(finding.category),
+          title: finding.title,
+          summary: finding.summary,
+          comment_refs: finding.comment_refs || [],
+        });
+      }
+      continue;
+    }
+    if (insight.purchase_signals?.length) {
+      normalized.push({
+        finding_id: `${insight.insight_id}-positive`,
+        category: "positive",
+        title: "产品好的地方",
+        summary: insight.purchase_signals.slice(0, 3).join("；"),
+        comment_refs: comments.filter((item) => /好用|推荐|感谢|学到|值得|爽/.test(item.content || "")).slice(0, 4).map((item) => item.comment_id),
+      });
+    }
+    if (insight.pain_points?.length) {
+      normalized.push({
+        finding_id: `${insight.insight_id}-pain`,
+        category: "pain",
+        title: "主要痛点",
+        summary: insight.pain_points.slice(0, 3).join("；"),
+        comment_refs: comments.filter((item) => /贵|难|坑|慢|问题|卡|配置/.test(item.content || "")).slice(0, 4).map((item) => item.comment_id),
+      });
+    }
+  }
+  return normalized;
+}
+
+function normalizeFindingCategory(value) {
+  return ["positive", "pain", "risk", "request", "question", "neutral"].includes(value) ? value : "neutral";
+}
+
+function circledNumber(index) {
+  const number = index + 1;
+  if (number >= 1 && number <= 20) return String.fromCodePoint(0x245f + number);
+  if (number >= 21 && number <= 35) return String.fromCodePoint(0x3250 + number - 20);
+  if (number >= 36 && number <= 50) return String.fromCodePoint(0x32b0 + number - 35);
+  return `○${number}`;
+}
+
+function commentAnchorId(commentId) {
+  return `xhs-comment-${String(commentId || "").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+const socialPlatformCopy = {
+  xiaohongshu: "小红书",
+  weibo: "微博",
+  douyin: "抖音",
+};
+
+const socialStatusCopy = {
+  collected: "已采集",
+  manual: "手动导入",
+  login_required: "需登录",
+  unavailable: "暂不可用",
+};
+
+const findingCategoryCopy = {
+  positive: "产品好评",
+  pain: "痛点",
+  risk: "风险",
+  request: "需求机会",
+  question: "用户疑问",
+  neutral: "观察",
+};
+
+const sentimentCopy = {
+  positive: "正向",
+  neutral: "中性",
+  negative: "负向",
+  mixed: "混合",
+};
+
 function EmptyState({ loading, liveTrace = [], streamState = null, onConfigure, providerStatus }) {
   if (loading && liveTrace.length) {
     return <LiveTracePanel liveTrace={liveTrace} streamState={streamState} />;
@@ -951,7 +2395,24 @@ function ProviderStatusPanel({ status, loading, onRefresh }) {
   );
 }
 
+function currentWorkflowActivity(trace = []) {
+  const latest = trace[trace.length - 1];
+  if (!latest) {
+    const [node, label, description] = workflowSteps[0];
+    return { node, label, description };
+  }
+  if (latest.node === "finalize") {
+    return null;
+  }
+  const latestIndex = workflowSteps.findIndex(([node]) => node === latest.node);
+  const isTerminal = terminalTraceEvents.has(latest.event_type);
+  const nextIndex = isTerminal ? Math.min(latestIndex + 1, workflowSteps.length - 1) : latestIndex;
+  const [node, label, description] = workflowSteps[Math.max(nextIndex, 0)] || workflowSteps[0];
+  return { node, label, description, after: latest };
+}
+
 function LiveTracePanel({ liveTrace, streamState }) {
+  const currentActivity = currentWorkflowActivity(liveTrace);
   return (
     <section className="live-trace">
       <div className="live-head">
@@ -959,8 +2420,8 @@ function LiveTracePanel({ liveTrace, streamState }) {
           <p className="eyebrow">实时 Agent 追踪</p>
           <h2>工作流运行时会持续推送节点事件。</h2>
         </div>
-        <span className="status-pill">
-          <Activity size={16} />
+        <span className="status-pill running-pill">
+          <Activity size={16} className="status-activity-icon" />
           运行中
         </span>
       </div>
@@ -974,6 +2435,20 @@ function LiveTracePanel({ liveTrace, streamState }) {
         </div>
       )}
       <div className="timeline">
+        {currentActivity && (
+          <article className="trace-item current-trace">
+            <div className="trace-index live-dot" aria-hidden="true">
+              <Activity size={15} />
+            </div>
+            <div>
+              <div className="trace-head">
+                <strong>正在执行：{currentActivity.label}</strong>
+                <span>进行中</span>
+              </div>
+              <p>{currentActivity.description}</p>
+            </div>
+          </article>
+        )}
         {liveTrace.map((event, index) => (
           <article className="trace-item" key={event.event_id}>
             <div className="trace-index">{String(index + 1).padStart(2, "0")}</div>
@@ -1005,25 +2480,11 @@ function StreamSummary({ liveTrace, streamState }) {
 }
 
 function WorkflowStepper({ trace = [], running = false }) {
-  const steps = [
-    ["planner", "规划"],
-    ["template", "模板"],
-    ["research", "检索"],
-    ["source_normalizer", "来源"],
-    ["evidence_extractor", "证据"],
-    ["interaction", "实测"],
-    ["analyst", "结论"],
-    ["critic", "复核"],
-    ["evidence_reviewer", "门禁"],
-    ["trust_summary", "可信度"],
-    ["writer", "报告"],
-    ["finalize", "完成"],
-  ];
   const seenNodes = new Set(trace.map((event) => event.node));
   const latestNode = trace[trace.length - 1]?.node || "";
   return (
     <section className="workflow-stepper" aria-label="工作流进度">
-      {steps.map(([node, label]) => {
+      {workflowSteps.map(([node, label]) => {
         const status = running && latestNode === node ? "active" : seenNodes.has(node) ? "done" : "pending";
         return (
           <div className={`workflow-step ${status}`} key={node}>
@@ -1546,8 +3007,8 @@ function ClaimsView({ result, onExcludeEvidence, onRestoreEvidence }) {
                 <strong>{claim.product}</strong>
                 <span>{dimensionCopy[claim.claim_type] || claim.claim_type}</span>
               </div>
-              <p>{claim.claim}</p>
-              {claim.note && <p className="note">{claim.note}</p>}
+              <p>{renderInlineMarkdown(claim.claim)}</p>
+              {claim.note && <p className="note">{renderInlineMarkdown(claim.note)}</p>}
               {expanded && (
                 <div className="evidence-detail-list">
                   {claim.supporting_evidence.length ? (
@@ -1557,7 +3018,7 @@ function ClaimsView({ result, onExcludeEvidence, onRestoreEvidence }) {
                       return (
                         <div className={`evidence-detail ${evidence?.status || "active"}`} key={id}>
                           <div>
-                            <strong>{evidence ? `${translateTaxonomyValue(evidence.evidence_type, evidenceTypeCopy)}：${translateStructuredText(evidence.summary)}` : id}</strong>
+                            <strong>{evidence ? renderInlineMarkdown(`${translateTaxonomyValue(evidence.evidence_type, evidenceTypeCopy)}：${translateStructuredText(evidence.summary)}`) : id}</strong>
                             {source && <a href={source.url} target="_blank" rel="noreferrer">{source.title}</a>}
                           </div>
                           {source && (
@@ -1635,7 +3096,7 @@ function translateTicketText(value) {
   const text = String(value).trim();
   const exact = {
     "Search official pricing page, or keep pricing model uncertain.": "检索官方定价页；如果仍无证据，定价模型应保持不确定状态。",
-    "Search official feature/product documentation before finalizing the feature tree.": "在最终确定功能证据地图前，请补充检索官方功能或产品文档。",
+    "Search official feature/product documentation before finalizing the source-inferred journey context.": "在最终确定 User Journey 的文档推断部分前，请补充检索官方功能或产品文档。",
     "Search official team/persona/customer material before finalizing personas.": "在最终确定用户画像前，请补充检索官方团队、用户画像或客户材料。",
     "Run a contradiction-oriented source check before treating the comparison as externally publishable.": "在对外发布前，请执行一次面向矛盾信息的来源检查。",
     "Collect detailed pricing data from official sources and third-party reports.": "从官方来源和第三方报告中补充收集更详细的定价数据。",
@@ -1792,7 +3253,7 @@ function FeatureEvidenceMapPanel({ tree }) {
     <div className="feature-tree-panel">
       <div className="feature-tree-head">
         <div>
-          <h3>功能证据地图</h3>
+          <h3>用户旅程 User Journey</h3>
           <p className="note">实测节点来自明确的浏览器点击路径；文档/搜索推断节点只能作为辅助研究线索。</p>
         </div>
         <div className="feature-tree-actions">
@@ -1801,8 +3262,8 @@ function FeatureEvidenceMapPanel({ tree }) {
         </div>
       </div>
       <label className="feature-tree-search">
-        <span>搜索功能证据地图</span>
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入功能、描述或 evidence id" />
+        <span>搜索 User Journey</span>
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入路径、功能、描述或 evidence id" />
       </label>
       {normalizedQuery && <p className="claim-count">找到 {matchCount} 个直接匹配节点，相关路径已自动展开。</p>}
       <FeatureNode
@@ -1813,7 +3274,7 @@ function FeatureEvidenceMapPanel({ tree }) {
         visibleKeys={visibleKeys}
         onToggle={toggleNode}
       />
-      {normalizedQuery && matchCount === 0 && <p className="empty-filter">功能证据地图中没有匹配内容。</p>}
+      {normalizedQuery && matchCount === 0 && <p className="empty-filter">User Journey 中没有匹配内容。</p>}
       {tree.coverage_note && <p className="note">{translateStructuredText(tree.coverage_note)}</p>}
     </div>
   );
@@ -1926,14 +3387,23 @@ function translateRisk(value) {
 
 function translateFeatureNodeText(value) {
   return translateStructuredText(value)
-    .replace("competitive feature map", "功能证据地图");
+    .replace("competitive feature map", "用户旅程 User Journey")
+    .replace("competitive user journey", "用户旅程 User Journey");
 }
 
 function translateStructuredText(value) {
   return String(value || "")
-    .replaceAll("FeatureTree groups product workflow, agent/AI workflow, and team readiness signals.", "功能证据地图按产品工作流、AI/Agent 工作流和团队就绪度组织能力信号。")
+    .replaceAll("FeatureTree groups product workflow, agent/AI workflow, and team readiness signals.", "User Journey 按产品工作流、AI/Agent 工作流和团队就绪度组织能力信号。")
+    .replaceAll("User Journey separates browser-observed workflows from source-inferred product claims.", "User Journey 区分浏览器实测路径和文档/搜索推断。")
+    .replace(/Capability tree for (.+?); browser-tested leaves are separated from source-inferred leaves\./g, "$1 的用户旅程；实测路径与文档推断已分开。")
+    .replace(/(\d+)\/(\d+) products have browser-observed workflow evidence; source-inferred leaves are useful for research but are not treated as verified function paths\./g, "$1/$2 个产品有浏览器实测路径；文档推断节点只作为研究线索，不当作已验证功能路径。")
+    .replaceAll("Browser-tested workflow", "实测用户旅程")
+    .replaceAll("Source-inferred product workflow", "文档推断旅程")
+    .replaceAll("Observed click-path evidence is available; use these leaves as the verified function tree.", "已有点击路径证据；这些叶子节点可作为已验证用户旅程。")
+    .replaceAll("No browser walkthrough evidence is available; this product's function tree is not interaction-verified.", "缺少浏览器实测证据；该产品的用户旅程尚未通过交互验证。")
+    .replaceAll("Features observed through a click path", "通过点击路径观察到的功能")
     .replace(/Evidence-backed capability tree for (.+?)\./g, "$1 的证据支撑能力地图。")
-    .replace(/(\d+)\/(\d+) feature-tree leaves have active evidence; uncovered leaves become review-ticket follow-up\./g, "$1/$2 个功能叶子节点已有有效证据；未覆盖节点会进入复核工单跟进。")
+    .replace(/(\d+)\/(\d+) feature-tree leaves have active evidence; uncovered leaves become review-ticket follow-up\./g, "$1/$2 个 User Journey 节点已有有效证据；未覆盖节点会进入复核工单跟进。")
     .replaceAll("Published subscription tiers", "公开订阅层级")
     .replaceAll("Published plan structure", "已公开的方案结构")
     .replaceAll("All compared products have pricing evidence.", "所有对比产品都有定价证据。")
@@ -1954,16 +3424,18 @@ function translateStructuredText(value) {
     .replaceAll("The report binds claims to evidence IDs, making product and PM review auditable.", "报告将结论绑定到证据 ID，方便产品和 PM 审计复核。")
     .replaceAll("Missing or downgraded evidence is excluded from final claims instead of being treated as fact.", "缺失或降级的证据不会被当作事实写入最终结论。")
     .replace(/(\d+) target-adjacent claim\(s\) still need reviewer attention\./g, "$1 条目标相关结论仍需复核关注。")
-    .replaceAll("Use feature-tree gaps to prioritize follow-up research and product messaging comparison.", "利用功能证据缺口确定后续调研和产品话术对比优先级。")
+    .replaceAll("Use user-journey gaps to prioritize follow-up research and product messaging comparison.", "利用 User Journey 缺口确定后续调研和产品话术对比优先级。")
     .replace(/Compare (\d+) competitor\(s\) through pricing and persona fit rather than a single score\./g, "围绕定价和用户画像适配度比较 $1 个竞品，而不是只给单一分数。")
     .replace(/(\d+) unresolved Review Ticket\(s\) can block external publication\./g, "$1 个未解决复核工单可能阻塞对外发布。")
     .replaceAll("Live provider results may differ from demo fixtures, so provider mode must be disclosed.", "实时 Provider 结果可能因来源变化而不同，因此需要披露 Provider 模式。")
     .replaceAll("Review Ticket(s)", "复核工单")
-    .replaceAll("feature-tree", "功能证据地图");
+    .replaceAll("feature-tree", "User Journey");
 }
 
 function ReportView({ result }) {
   const report = result.report;
+  const reportMarkdown = normalizeReportMarkdown(report?.markdown || "");
+  const citationContext = useMemo(() => buildCitationContext(result, reportMarkdown), [result, reportMarkdown]);
   const [exported, setExported] = useState(null);
   const [exportError, setExportError] = useState("");
 
@@ -2005,6 +3477,7 @@ function ReportView({ result }) {
           <span>这份报告仍有未解决的复核工单；在复核队列清空前，请使用“导出草稿”。</span>
         </div>
       )}
+      <SkillSnapshotPanel snapshot={result.skill_assignments || report?.skill_assignments || []} />
       {report?.sections?.length > 0 && (
         <details className="report-directory">
           <summary>查看报告章节状态（{report.sections.length} 个章节）</summary>
@@ -2018,7 +3491,9 @@ function ReportView({ result }) {
           </div>
         </details>
       )}
-      <StructuredReportPanel report={report} />
+      <div className="report-document">
+        <MarkdownReport markdown={reportMarkdown} citationContext={citationContext} showReferences />
+      </div>
       {exportError && <p className="error inline">{exportError}</p>}
       {exported && (
         <div className="export-box">
@@ -2027,18 +3502,49 @@ function ReportView({ result }) {
           <textarea readOnly value={exported.content} rows={8} />
         </div>
       )}
+      <details className="report-directory report-detail-panel">
+        <summary>查看报告详情</summary>
+        <StructuredReportPanel report={report} />
+      </details>
       <details className="raw-report">
-        <summary>查看原始 Markdown 报告</summary>
+        <summary>查看原始 Markdown 文本</summary>
         <p>保留结构化报告生成时的完整文本与必要英文术语，便于审计和导出。</p>
-        <MarkdownReport markdown={normalizeReportMarkdown(report?.markdown || "")} />
+        <pre>{reportMarkdown}</pre>
       </details>
     </section>
   );
 }
 
+function SkillSnapshotPanel({ snapshot }) {
+  const items = snapshot || [];
+  if (!items.length) {
+    return (
+      <div className="skill-snapshot empty">
+        <span>PM Skill 映射</span>
+        <strong>未启用</strong>
+      </div>
+    );
+  }
+  return (
+    <details className="skill-snapshot" open>
+      <summary>本次使用的 PM Skill 映射（{items.length}）</summary>
+      <div className="skill-snapshot-grid">
+        {items.map((item) => (
+          <div key={`${item.slot}-${item.skill_hash || item.skill_path}`}>
+            <span>{item.slot}</span>
+            <strong>{item.skill_name}</strong>
+            <small>{item.skill_license} · {item.skill_repo}/{item.skill_path}</small>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function displayReportSectionTitle(title) {
   return String(title || "")
-    .replace("功能树 FeatureTree", "功能证据地图")
+    .replace("功能树 FeatureTree", "用户旅程 User Journey")
+    .replace("用户旅程 User Journey", "用户旅程 User Journey")
     .replaceAll("Competitor Analysis", "竞品分析")
     .replace("定价模型 PricingModel", "定价模型")
     .replace("用户画像 UserPersona", "用户画像")
@@ -2048,9 +3554,9 @@ function displayReportSectionTitle(title) {
 
 function normalizeReportMarkdown(markdown) {
   return String(markdown || "")
-    .replaceAll("功能树 FeatureTree", "功能证据地图")
-    .replaceAll("## 功能树", "## 功能证据地图")
-    .replaceAll("FeatureTree", "功能证据地图")
+    .replaceAll("功能树 FeatureTree", "用户旅程 User Journey")
+    .replaceAll("## 功能树", "## 用户旅程 User Journey")
+    .replaceAll("FeatureTree", "User Journey")
     .replaceAll("Competitor Analysis", "竞品分析")
     .replaceAll("PricingModel", "定价模型")
     .replaceAll("UserPersona", "用户画像")
@@ -2063,7 +3569,7 @@ function normalizeReportMarkdown(markdown) {
     .replace(/## (定价模型|用户画像)\s+\1/g, "## $1");
 }
 
-function MarkdownReport({ markdown }) {
+function MarkdownReport({ markdown, citationContext = null, showReferences = false }) {
   const lines = markdown.split(/\r?\n/);
   const blocks = [];
   let index = 0;
@@ -2081,7 +3587,7 @@ function MarkdownReport({ markdown }) {
         tableLines.push(lines[index]);
         index += 1;
       }
-      blocks.push(<MarkdownTable key={`table-${index}`} lines={tableLines} />);
+      blocks.push(<MarkdownTable key={`table-${index}`} lines={tableLines} citationContext={citationContext} />);
       continue;
     }
     if (line.startsWith("### ")) {
@@ -2105,25 +3611,31 @@ function MarkdownReport({ markdown }) {
         quoteLines.push(lines[index].slice(2));
         index += 1;
       }
-      blocks.push(<blockquote key={`quote-${index}`}>{quoteLines.map((item, itemIndex) => <p key={itemIndex}>{renderInlineMarkdown(item)}</p>)}</blockquote>);
+      blocks.push(
+        <blockquote key={`quote-${index}`}>
+          {quoteLines.map((item, itemIndex) => (
+            <p key={itemIndex}>{renderReportLine(item, citationContext)}</p>
+          ))}
+        </blockquote>
+      );
       continue;
     }
     if (/^\s*[-*]\s+/.test(line)) {
       const items = [];
       while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^\s*[-*]\s+/, ""));
+        appendMarkdownListItem(items, lines[index].replace(/^\s*[-*]\s+/, ""), citationContext);
         index += 1;
       }
-      blocks.push(<ul key={`list-${index}`}>{items.map((item, itemIndex) => <li key={itemIndex}>{renderInlineMarkdown(item)}</li>)}</ul>);
+      blocks.push(<ul key={`list-${index}`}>{items.map((item, itemIndex) => <li key={itemIndex}>{renderReportLine(item.text, citationContext, item.refs)}</li>)}</ul>);
       continue;
     }
     if (/^\s*\d+[.)、]\s+/.test(line)) {
       const items = [];
       while (index < lines.length && /^\s*\d+[.)、]\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^\s*\d+[.)、]\s+/, ""));
+        appendMarkdownListItem(items, lines[index].replace(/^\s*\d+[.)、]\s+/, ""), citationContext);
         index += 1;
       }
-      blocks.push(<ol key={`olist-${index}`}>{items.map((item, itemIndex) => <li key={itemIndex}>{renderInlineMarkdown(item)}</li>)}</ol>);
+      blocks.push(<ol key={`olist-${index}`}>{items.map((item, itemIndex) => <li key={itemIndex}>{renderReportLine(item.text, citationContext, item.refs)}</li>)}</ol>);
       continue;
     }
 
@@ -2133,24 +3645,29 @@ function MarkdownReport({ markdown }) {
       paragraph.push(lines[index].trim());
       index += 1;
     }
-    blocks.push(<p key={`p-${index}`}>{renderInlineMarkdown(paragraph.join(" "))}</p>);
+    blocks.push(<p key={`p-${index}`}>{renderReportLine(paragraph.join(" "), citationContext)}</p>);
   }
 
-  return <article className="markdown-report">{blocks}</article>;
+  return (
+    <article className="markdown-report">
+      {blocks}
+      {showReferences && <CitationReferenceList citationContext={citationContext} />}
+    </article>
+  );
 }
 
-function MarkdownTable({ lines }) {
+function MarkdownTable({ lines, citationContext = null }) {
   const rows = lines.map((line) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()));
   const [head, ...body] = rows;
   return (
     <div className="markdown-table-wrap">
       <table className="markdown-table">
         <thead>
-          <tr>{head.map((cell, index) => <th key={index}>{renderInlineMarkdown(cell)}</th>)}</tr>
+          <tr>{head.map((cell, index) => <th key={index}>{renderReportLine(cell, citationContext)}</th>)}</tr>
         </thead>
         <tbody>
           {body.map((row, rowIndex) => (
-            <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInlineMarkdown(cell)}</td>)}</tr>
+            <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderReportLine(cell, citationContext)}</td>)}</tr>
           ))}
         </tbody>
       </table>
@@ -2158,14 +3675,55 @@ function MarkdownTable({ lines }) {
   );
 }
 
+function appendMarkdownListItem(items, text, citationContext) {
+  const refs = getCitationRefs(text, citationContext);
+  const cleanText = stripEvidenceMarkers(text).trim();
+  if (!cleanText && refs.length && items.length) {
+    items[items.length - 1] = {
+      ...items[items.length - 1],
+      refs: mergeCitationRefs(items[items.length - 1].refs, refs),
+    };
+    return;
+  }
+  if (!cleanText && !refs.length) return;
+  items.push({ text: cleanText || text, refs });
+}
+
+function renderReportLine(text, citationContext, explicitRefs = null) {
+  const refs = explicitRefs || getCitationRefs(text, citationContext);
+  const cleanText = stripEvidenceMarkers(text);
+  return renderInlineMarkdownWithCitations(cleanText, refs);
+}
+
+function renderInlineMarkdownWithCitations(text, refs = []) {
+  if (!refs.length) return renderInlineMarkdown(text);
+  const chunks = splitCitationSentences(text);
+  if (chunks.length <= 1) {
+    return (
+      <>
+        {renderInlineMarkdown(text)}
+        <CitationSup refs={refs} />
+      </>
+    );
+  }
+  return chunks.map((chunk, index) => (
+    <React.Fragment key={`sentence-${index}`}>
+      {renderInlineMarkdown(chunk)}
+      {hasCitationText(chunk) && <CitationSup refs={refs} />}
+    </React.Fragment>
+  ));
+}
+
 function renderInlineMarkdown(text) {
   const parts = [];
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
+  const pattern = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
   let lastIndex = 0;
   String(text).replace(pattern, (match, _token, offset) => {
     if (offset > lastIndex) parts.push(String(text).slice(lastIndex, offset));
     if (match.startsWith("**")) {
-      parts.push(<strong key={`${offset}-strong`}>{match.slice(2, -2)}</strong>);
+      parts.push(<strong key={`${offset}-strong`}>{renderInlineMarkdown(match.slice(2, -2))}</strong>);
+    } else if (match.startsWith("*")) {
+      parts.push(<em key={`${offset}-em`}>{match.slice(1, -1)}</em>);
     } else if (match.startsWith("`")) {
       parts.push(<code key={`${offset}-code`}>{match.slice(1, -1)}</code>);
     } else {
@@ -2177,6 +3735,112 @@ function renderInlineMarkdown(text) {
   });
   if (lastIndex < String(text).length) parts.push(String(text).slice(lastIndex));
   return parts;
+}
+
+function CitationSup({ refs }) {
+  if (!refs?.length) return null;
+  return (
+    <sup className="citation-sup">
+      {refs.map((ref) => (
+        <button type="button" key={ref.evidenceId} onClick={() => scrollToCitation(ref.number)} aria-label={`跳转到引用来源 ${circledNumber(ref.number - 1)}`}>
+          {circledNumber(ref.number - 1)}
+        </button>
+      ))}
+    </sup>
+  );
+}
+
+function CitationReferenceList({ citationContext }) {
+  const references = citationContext?.references || [];
+  if (!references.length) return null;
+  return (
+    <section className="citation-references" aria-label="引用来源">
+      <h3>引用来源</h3>
+      <ol>
+        {references.map((ref) => (
+          <li id={`report-citation-${ref.number}`} key={ref.evidence.evidence_id} tabIndex={-1}>
+            <div className="citation-index">{circledNumber(ref.number - 1)}</div>
+            <div>
+              <div className="citation-title">
+                <strong>{translateStructuredText(ref.evidence.summary)}</strong>
+                <span>{translateTaxonomyValue(ref.evidence.evidence_type, evidenceTypeCopy)} · {ref.evidence.product}</span>
+              </div>
+              <p>{ref.evidence.quote_or_locator || ref.source?.content || "该证据没有提供更细的定位信息。"}</p>
+              {ref.source && (
+                <a href={ref.source.url} target="_blank" rel="noreferrer">
+                  {ref.source.title || ref.source.url}
+                </a>
+              )}
+              <dl>
+                <div><dt>来源类型</dt><dd>{translateTaxonomyValue(ref.source?.source_type || "", sourcePreferenceCopy) || "-"}</dd></div>
+                <div><dt>置信度</dt><dd>{translateConfidence(ref.evidence.confidence)}</dd></div>
+                <div><dt>风险</dt><dd>{translateRisk(ref.evidence.risk)}</dd></div>
+              </dl>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function buildCitationContext(result, markdown) {
+  const evidenceById = new Map((result.evidence || []).map((item) => [item.evidence_id, item]));
+  const sourceById = new Map((result.sources || []).map((source) => [source.source_id, source]));
+  const orderedIds = unique(extractEvidenceIds(markdown).filter((id) => evidenceById.has(id)));
+  const refByEvidenceId = new Map(orderedIds.map((id, index) => [id, index + 1]));
+  const references = orderedIds.map((id) => {
+    const evidence = evidenceById.get(id);
+    return {
+      number: refByEvidenceId.get(id),
+      evidence,
+      source: sourceById.get(evidence?.source_id),
+    };
+  }).filter((item) => item.evidence);
+  return { evidenceById, sourceById, refByEvidenceId, references };
+}
+
+function extractEvidenceIds(text) {
+  return Array.from(String(text || "").matchAll(/\bev_[A-Za-z0-9_-]+\b/g)).map((match) => match[0]);
+}
+
+function getCitationRefs(text, citationContext) {
+  if (!citationContext) return [];
+  return unique(extractEvidenceIds(text))
+    .map((evidenceId) => {
+      const number = citationContext.refByEvidenceId.get(evidenceId);
+      return number ? { evidenceId, number } : null;
+    })
+    .filter(Boolean);
+}
+
+function mergeCitationRefs(existing = [], next = []) {
+  const merged = new Map();
+  [...existing, ...next].forEach((ref) => merged.set(ref.evidenceId, ref));
+  return Array.from(merged.values()).sort((a, b) => a.number - b.number);
+}
+
+function stripEvidenceMarkers(text) {
+  return String(text || "")
+    .replace(/\s*(?:Evidence|证据)\s*[:：]\s*(?:none|无|暂无|ev_[A-Za-z0-9_-]+(?:\s*[,，、]\s*ev_[A-Za-z0-9_-]+)*)\.?/gi, "")
+    .trim();
+}
+
+function splitCitationSentences(text) {
+  const value = String(text || "");
+  const chunks = value.match(/[^。！？!?；;]+[。！？!?；;]?\s*/g);
+  return chunks?.length ? chunks : [value];
+}
+
+function hasCitationText(text) {
+  return /[\p{L}\p{N}\u4e00-\u9fff]/u.test(String(text || ""));
+}
+
+function scrollToCitation(number) {
+  const target = document.getElementById(`report-citation-${number}`);
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.focus({ preventScroll: true });
 }
 
 function percent(value) {

@@ -1,10 +1,15 @@
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+  } catch (err) {
+    throw new Error(`无法连接后端 API（${API_BASE}）：${err.message || "网络请求失败"}`);
+  }
   if (!response.ok) {
     throw new Error(await formatError(response));
   }
@@ -40,6 +45,19 @@ export async function getProviderStatus() {
   return envelope.data;
 }
 
+export async function getAppSettings() {
+  const envelope = await request("/api/v1/settings");
+  return envelope.data;
+}
+
+export async function updateAppSettings(values) {
+  const envelope = await request("/api/v1/settings", {
+    method: "PUT",
+    body: JSON.stringify({ values }),
+  });
+  return envelope.data;
+}
+
 export async function createTaskV1(config) {
   const envelope = await request("/api/v1/tasks", {
     method: "POST",
@@ -66,6 +84,69 @@ export async function condenseAnalysisGoals(payload) {
 
 export async function recommendCompetitors(payload) {
   const envelope = await request("/api/v1/competitors/recommend", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return envelope.data;
+}
+
+export async function generateUserResearchSurvey(payload) {
+  const envelope = await request("/api/v1/surveys/generate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return envelope.data;
+}
+
+export async function getSkillCatalog() {
+  const envelope = await request("/api/v1/skills/catalog");
+  return envelope.data;
+}
+
+export async function importGithubSkill(payload) {
+  const envelope = await request("/api/v1/skills/import-github", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return envelope.data;
+}
+
+export async function syncDefaultSkills() {
+  const envelope = await request("/api/v1/skills/sync-defaults", { method: "POST" });
+  return envelope.data;
+}
+
+export async function updateSkillAssignments(assignments) {
+  const envelope = await request("/api/v1/skills/assignments", {
+    method: "PUT",
+    body: JSON.stringify({ assignments }),
+  });
+  return envelope.data;
+}
+
+export async function recommendSkills(payload) {
+  const envelope = await request("/api/v1/skills/recommend", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return envelope.data;
+}
+
+export async function getXhsStatus() {
+  const envelope = await request("/api/v1/social/xhs/status");
+  return envelope.data;
+}
+
+export async function getXhsLoginQrCode() {
+  const envelope = await request("/api/v1/social/xhs/login-qrcode", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  return envelope.data;
+}
+
+export async function checkXhsQrCodeStatus(payload) {
+  const envelope = await request("/api/v1/social/xhs/qrcode-status", {
     method: "POST",
     body: JSON.stringify(payload),
   });

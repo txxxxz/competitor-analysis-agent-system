@@ -23,7 +23,8 @@ PURPOSE_SCHEMAS = {
     ),
     "report_enhancement": (
         "Return JSON: {\"executive_summary\":[string],\"strategic_recommendations\":[string],"
-        "\"caveats\":[string]}. Keep every sentence evidence-bound and concise."
+        "\"caveats\":[string]}. Keep every sentence evidence-bound, polished, and plain-language. "
+        "Paraphrase source material into formal PM analysis Chinese; do not paste source wording except when explicitly describing Resources."
     ),
     "analysis_goal_polish": (
         "Return JSON: {\"goals\":[string],\"items\":[{\"title\":string,\"details\":[string]}]}. "
@@ -40,6 +41,22 @@ PURPOSE_SCHEMAS = {
         "Recommend direct or adjacent competitors for the target product. "
         "Do not include the target product itself or products already listed in existing_competitors. "
         "Prefer real, currently recognizable products. Return concise product names only."
+    ),
+    "survey_generation": (
+        "Return JSON: {\"title\":string,\"research_objective\":string,\"target_users\":string,"
+        "\"screening_criteria\":[string],\"questions\":[{\"question_id\":string,"
+        "\"type\":\"screening|single_choice|multiple_choice|likert|ranking|open_text\","
+        "\"text\":string,\"options\":[string],\"required\":boolean,\"purpose\":string}],"
+        "\"analysis_plan\":[string],\"survey_json\":object}. "
+        "Design a user research questionnaire with neutral wording, clear screening, measurable scale items, "
+        "and open questions for qualitative insight. Avoid leading questions and unsupported facts. "
+        "Use the requested language."
+    ),
+    "social_insight_synthesis": (
+        "Return JSON: {\"findings\":[{\"category\":\"positive|pain|risk|request|question|neutral\","
+        "\"title\":string,\"summary\":string,\"comment_refs\":[comment_id]}]}. "
+        "Summarize only from supplied Xiaohongshu comments. Include both positive product strengths and pain points "
+        "when present. Keep Chinese concise. Every finding should cite only comment_id values present in input."
     ),
 }
 
@@ -63,8 +80,14 @@ class DeepSeekLLMProvider(LLMProvider):
         self.model = MODEL_ALIASES.get(model, model)
         self.timeout_seconds = timeout_seconds
 
-    def complete_structured(self, purpose: str, payload: dict) -> dict:
+    def complete_structured(self, purpose: str, payload: dict, skill_prompt: str = "") -> dict:
         schema_instruction = PURPOSE_SCHEMAS.get(purpose, "Return strict JSON only.")
+        hard_constraints = (
+            "Hard constraints: return only valid JSON; bind factual claims to Evidence IDs when evidence is present; "
+            "do not invent facts, metrics, users, pricing, or sources; do not bypass Review Ticket gaps; "
+            "the JSON schema and evidence rules override any PM skill guidance."
+        )
+        skill_section = f"\n\nPM skill markdown framework:\n{skill_prompt}" if skill_prompt else ""
         request_body = {
             "model": self.model,
             "messages": [
@@ -72,7 +95,7 @@ class DeepSeekLLMProvider(LLMProvider):
                     "role": "system",
                     "content": (
                         f"You are a structured-output assistant for {purpose}. "
-                        f"{schema_instruction} Return only valid JSON, without markdown fences."
+                        f"{schema_instruction} {hard_constraints}{skill_section}"
                     ),
                 },
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},

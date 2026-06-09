@@ -24,8 +24,14 @@ class SeedLLMProvider(LLMProvider):
         self.model = model
         self.timeout_seconds = timeout_seconds
 
-    def complete_structured(self, purpose: str, payload: dict) -> dict:
+    def complete_structured(self, purpose: str, payload: dict, skill_prompt: str = "") -> dict:
         schema_instruction = PURPOSE_SCHEMAS.get(purpose, "Return strict JSON only.")
+        hard_constraints = (
+            "Hard constraints: return only valid JSON; bind factual claims to Evidence IDs when evidence is present; "
+            "do not invent facts, metrics, users, pricing, or sources; do not bypass Review Ticket gaps; "
+            "the JSON schema and evidence rules override any PM skill guidance."
+        )
+        skill_section = f"\n\nPM skill markdown framework:\n{skill_prompt}" if skill_prompt else ""
         request_body = {
             "model": self.model,
             "messages": [
@@ -33,7 +39,7 @@ class SeedLLMProvider(LLMProvider):
                     "role": "system",
                     "content": (
                         f"You are a structured-output assistant for {purpose}. "
-                        f"{schema_instruction} Return only valid JSON, without markdown fences."
+                        f"{schema_instruction} {hard_constraints}{skill_section}"
                     ),
                 },
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
