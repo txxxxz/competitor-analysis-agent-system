@@ -1024,6 +1024,38 @@ def test_v1_review_ticket_rerun_cap_blocks_task(tmp_path, monkeypatch):
     assert loaded.review_tickets[0].status == "blocked"
 
 
+@pytest.mark.parametrize("closed_status", ["resolved", "dismissed", "blocked"])
+def test_v1_review_ticket_rerun_rejects_closed_ticket(tmp_path, monkeypatch, closed_status):
+    from fastapi.testclient import TestClient
+
+    from app.api import routes
+    from app.main import app
+    from app.storage.sqlite import SQLiteStore
+
+    store = SQLiteStore(str(tmp_path / "app.db"))
+    monkeypatch.setattr(routes, "store", store)
+    client = TestClient(app)
+    task = store.create_task(
+        Task(
+            config=TaskConfig(
+                domain="ai_tools",
+                target_product="Cursor",
+                competitors=["GitHub Copilot"],
+                analysis_goals=["positioning", "pricing"],
+            )
+        )
+    )
+    result = run_workflow(task)
+    ticket = result.review_tickets[0]
+    ticket.status = closed_status
+    store.save_result(result)
+
+    response = client.post(f"/api/v1/review-tickets/{ticket.ticket_id}/rerun", json={"preserve_existing_artifacts": True})
+
+    assert response.status_code == 409
+    assert f"already {closed_status}" in response.json()["detail"]
+
+
 def test_v1_review_ticket_mark_unavailable_updates_claim_and_report(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -1453,9 +1485,14 @@ def test_writer_uses_structured_llm_report_enhancement(monkeypatch):
         def complete_structured(self, purpose: str, payload: dict) -> dict:
             assert purpose == "report_enhancement"
             assert payload["task"]["target_product"] == "Cursor"
+            claim_id = payload["included_claims"][0]["claim_id"]
+            evidence_id = payload["included_claims"][0]["supporting_evidence"][0]
             return {
-                "executive_summary": ["Seed synthesized an executive summary."],
-                "strategic_recommendations": ["Seed recommended validating pricing evidence."],
+                "executive_summary": [{"text": "Seed synthesized an executive summary.", "claim_ids": [claim_id], "evidence_ids": [evidence_id]}],
+                "strategic_recommendations": [
+                    {"text": "Seed recommended validating pricing evidence.", "claim_ids": [claim_id], "evidence_ids": [evidence_id]},
+                    {"text": "Seed attempted an unbound recommendation."},
+                ],
                 "caveats": ["Seed caveat stays evidence-bound."],
             }
 
@@ -1479,6 +1516,10 @@ def test_writer_uses_structured_llm_report_enhancement(monkeypatch):
     assert written.report is not None
     assert "## 结构化综合摘要" in written.report.markdown
     assert "Seed synthesized an executive summary." in written.report.markdown
+    assert written.report.markdown.index("## 结构化综合摘要") < written.report.markdown.index("## 决策摘要")
+    assert written.report.markdown.index("## 结构化综合摘要") < written.report.markdown.index("## 数据来源（Resources）")
+    assert "依据：cl_" in written.report.markdown
+    assert "未绑定证据，需复核：Seed attempted an unbound recommendation." in written.report.markdown
     assert any(call.tool == "SeedLLMProvider" and call.operation == "complete_structured" for call in written.tool_calls)
     assert any(event.event_type == "llm_enhancement_applied" for event in written.trace)
 
@@ -1493,7 +1534,8 @@ def test_writer_keeps_raw_excerpt_only_in_resources():
 
     assert written.report is not None
     assert "第三方来源占比" in written.report.markdown
-    assert "从定位看，Cursor 的关键信号是" in written.report.markdown
+    assert "## 决策摘要" in written.report.markdown
+    assert "## 关键差异洞察" in written.report.markdown
     assert "## 数据来源（Resources）" in written.report.markdown
     assert "原文摘录：" in written.report.markdown
     assert "<b>" not in written.report.markdown
@@ -1698,6 +1740,173 @@ def _strictness_state(strictness: str, source_type: str, confidence: str) -> Gra
         included_in_report=True,
     )
     return GraphState(task=task, sources=[source], evidence=[evidence], claims=[claim])
+
+
+def test_review_ticket_improvement_requires_new_bound_passed_claim():
+    from app.core.nodes import resolve_review_ticket_improvements
+
+    state = _strictness_state("high", source_type="official_homepage", confidence="high")
+    ticket = ReviewTicket(
+        task_id=state.task.task_id,
+        reviewer="CriticAgent",
+        target_node="ResearchAgent",
+        status="rerun_started",
+        product="Cursor",
+        missing_evidence_type="positioning",
+        reason="Cursor positioning evidence should be improved.",
+        required_action="Collect positioning evidence.",
+        before_evidence_ids=[state.evidence[0].evidence_id],
+        before_claim_statuses=[
+            {
+                "claim_id": state.claims[0].claim_id,
+                "verified_status": "passed",
+                "included_in_report": True,
+                "supporting_evidence": state.claims[0].supporting_evidence,
+            }
+        ],
+    )
+    state.review_tickets = [ticket]
+
+    resolved = resolve_review_ticket_improvements(state)
+
+    assert resolved == 0
+    assert ticket.status == "rerun_started"
+    assert ticket.added_evidence_ids == []
+    assert ticket.improved_claim_ids == []
+    assert ticket.after_claim_statuses
+
+
+def test_review_ticket_improvement_rejects_wrong_product_or_type():
+    from app.core.nodes import resolve_review_ticket_improvements
+
+    state = _strictness_state("high", source_type="official_homepage", confidence="high")
+    state.evidence[0].product = "GitHub Copilot"
+    state.claims[0].product = "GitHub Copilot"
+    ticket = ReviewTicket(
+        task_id=state.task.task_id,
+        reviewer="CriticAgent",
+        target_node="ResearchAgent",
+        status="rerun_started",
+        product="Cursor",
+        missing_evidence_type="positioning",
+        reason="Cursor positioning evidence should be improved.",
+        required_action="Collect positioning evidence.",
+        before_evidence_ids=[],
+        before_claim_statuses=[],
+    )
+    state.review_tickets = [ticket]
+
+    resolved = resolve_review_ticket_improvements(state)
+
+    assert resolved == 0
+    assert ticket.status == "rerun_started"
+    assert ticket.added_evidence_ids == []
+    assert ticket.improved_claim_ids == []
+
+
+def test_review_ticket_improvement_rejects_added_evidence_when_claim_is_downgraded():
+    from app.core.nodes import resolve_review_ticket_improvements
+
+    state = _strictness_state("high", source_type="official_homepage", confidence="high")
+    state.claims[0].verified_status = "downgraded"
+    state.claims[0].included_in_report = False
+    ticket = ReviewTicket(
+        task_id=state.task.task_id,
+        reviewer="CriticAgent",
+        target_node="ResearchAgent",
+        status="rerun_started",
+        product="Cursor",
+        missing_evidence_type="positioning",
+        reason="Cursor positioning evidence should be improved.",
+        required_action="Collect positioning evidence.",
+        before_evidence_ids=[],
+        before_claim_statuses=[],
+    )
+    state.review_tickets = [ticket]
+
+    resolved = resolve_review_ticket_improvements(state)
+
+    assert resolved == 0
+    assert ticket.status == "rerun_started"
+    assert ticket.added_evidence_ids == [state.evidence[0].evidence_id]
+    assert ticket.improved_claim_ids == []
+
+
+def test_interaction_ticket_rerun_records_before_after_snapshot():
+    from app.core.graph import rerun_review_ticket
+
+    task = Task(
+        config=TaskConfig(
+            domain="ai_tools",
+            target_product="Cursor",
+            competitors=[],
+            analysis_goals=["browser walkthrough"],
+        )
+    )
+    source = Source(
+        task_id=task.task_id,
+        title="Cursor Features",
+        url="https://cursor.com/features",
+        source_type="official_docs",
+        product="Cursor",
+        query="Cursor official product features docs",
+        confidence="high",
+        content="Cursor feature workflow.",
+    )
+    ticket = ReviewTicket(
+        task_id=task.task_id,
+        reviewer="CriticAgent",
+        target_node="InteractionAgent",
+        status="open",
+        product="Cursor",
+        missing_evidence_type="browser_interaction",
+        reason="Cursor lacks browser interaction evidence.",
+        required_action="Record browser interaction path.",
+        preferred_source_type="browser_walkthrough",
+    )
+    result = GraphState(
+        task=task,
+        sources=[source],
+        evidence=[
+            Evidence(
+                task_id=task.task_id,
+                source_id=source.source_id,
+                product="Cursor",
+                evidence_type="feature",
+                summary="Cursor feature coverage centers on editor-native AI workflows.",
+                quote_or_locator="Features fixture",
+                interaction_path=["Editor", "Agent panel", "Apply changes"],
+                confidence="high",
+            )
+        ],
+        raw_sources=[
+            {
+                "title": source.title,
+                "url": source.url,
+                "source_type": source.source_type,
+                "product": source.product,
+                "content": source.content,
+                "evidence_type": "feature",
+                "summary": "Cursor feature coverage centers on editor-native AI workflows.",
+                "locator": "Features fixture",
+                "query": source.query,
+                "interaction_steps": ["Editor", "Agent panel", "Apply changes"],
+                "interaction_summary": "Cursor workflow was observed from agent panel to applying changes.",
+            }
+        ],
+        review_tickets=[ticket],
+    ).result()
+
+    rerun = rerun_review_ticket(result, ticket.ticket_id)
+    updated_ticket = next(item for item in rerun.review_tickets if item.ticket_id == ticket.ticket_id)
+
+    assert updated_ticket.status == "resolved"
+    assert updated_ticket.before_evidence_ids == []
+    assert updated_ticket.before_claim_statuses == []
+    assert updated_ticket.added_evidence_ids
+    assert updated_ticket.improved_claim_ids
+    assert updated_ticket.after_claim_statuses
+    assert any(evidence.evidence_type == "browser_interaction" for evidence in rerun.evidence)
 
 
 def test_sqlite_store_round_trip(tmp_path):

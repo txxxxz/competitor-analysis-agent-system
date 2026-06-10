@@ -72,6 +72,16 @@ AI_TOOLS_FIXTURES = {
             "summary": "Independent feedback frames Cursor as strong for in-editor iteration, with pricing and privacy checks still influencing team adoption.",
             "locator": "Third-party review fixture",
         },
+        {
+            "title": "Cursor public contradiction scan",
+            "url": "https://example.com/reviews/cursor-limitations-scan",
+            "source_type": "third_party_relevant",
+            "product": "Cursor",
+            "content": "A public review scan notes no material contradiction against Cursor's core positioning, while flagging pricing limits and privacy review as normal buyer checks.",
+            "evidence_type": "contradiction",
+            "summary": "Independent contradiction scan did not find a material conflict with Cursor's core positioning, but kept pricing limits and privacy review as buyer checks.",
+            "locator": "Contradiction scan fixture",
+        },
     ],
     "GitHub Copilot": [
         {
@@ -179,6 +189,16 @@ AI_TOOLS_FIXTURES = {
             "evidence_type": "target_user",
             "summary": "Windsurf targets developers and teams seeking AI-assisted coding workflows.",
             "locator": "Teams fixture",
+        },
+        {
+            "title": "Windsurf Security",
+            "url": "https://windsurf.com/security",
+            "source_type": "official_docs",
+            "product": "Windsurf",
+            "content": "Windsurf security material describes team controls and privacy posture for enterprise evaluation.",
+            "evidence_type": "security",
+            "summary": "Windsurf publishes security and privacy signals for team adoption.",
+            "locator": "Security fixture",
         },
         {
             "title": "Windsurf developer experience review",

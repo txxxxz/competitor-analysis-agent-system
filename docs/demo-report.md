@@ -1,6 +1,6 @@
 # Demo Report
 
-Generated: 2026-06-03
+Generated: 2026-06-10
 
 ## Demo Scope
 
@@ -13,7 +13,7 @@ Sample task:
 - Domain: AI tools
 - Goals: positioning, pricing, feature, target users, security, agent capability
 - Evidence strictness: high
-- Provider mode: Demo fixture run by default; Live provider run is enabled by `.env` through AnySearch and Seed adapters with visible fallback status
+- Provider mode: this demo intentionally runs in `Demo fixture run`; live provider delivery is enabled through `.env` only when search and LLM providers are configured and mock / fallback switches are disabled
 
 ## Sample Data And Users
 
@@ -40,12 +40,14 @@ Sample data:
 
 Evidence:
 
-- Workflow report contains User Journey, PricingModel, UserPersona, and SWOT structured objects.
+- Workflow report contains PM 决策页, User Journey, PricingModel, UserPersona, and SWOT structured objects.
+- Demo interaction paths are labeled as `fixture_walkthrough`; they support journey hypotheses but are not counted as live browser observations.
+- PricingModel surfaces amount, billing unit, usage limit, free/trial, enterprise terms, and data gaps instead of only naming pricing tiers.
 - Trust Summary explicitly labels `Demo fixture run` versus `Live provider run` and shows search/LLM modes.
 - Trace events include prompt/input/output summaries plus provider, token, latency, and request-id fields where available.
 - Trace included `llm_claim_enrichment_applied`.
 - Trace included `llm_enhancement_applied`.
-- Final Report showed `用户旅程 User Journey`, `定价模型 PricingModel`, `用户画像 UserPersona`, `SWOT`, `结构化综合摘要`, `结构化建议`, and `结构化 Caveats`.
+- Final Report showed `PM 决策页`, `用户旅程 User Journey`, `定价模型 PricingModel`, `用户画像 UserPersona`, `SWOT`, `结构化综合摘要`, `结构化建议`, and `结构化 Caveats`.
 
 ## Error Path
 
@@ -54,9 +56,9 @@ Validated error and fallback behavior:
 - V1 task validation rejects target product duplicated in competitors.
 - Evidence exclusion marks linked claims and report sections stale.
 - Report export blocks stale reports unless draft export is explicitly allowed.
-- Provider factory falls back from missing AnySearch/Seed config to mock providers when fallback is enabled.
-- Seed request failure paths record failed ToolCalls and can fall back to deterministic mock enhancement when allowed.
-- Review Ticket rerun can resolve supplemental pricing evidence or dismiss unavailable feature/user/security/contradiction evidence without turning gaps into final facts.
+- Provider factory can fall back to mock providers only when fallback is explicitly enabled for demo continuity.
+- Seed / DeepSeek request failure paths record failed ToolCalls; deterministic mock enhancement is allowed only in explicit demo mode.
+- Review Ticket rerun resolves only when added evidence improves a bound claim; otherwise the report remains in reviewer attention instead of turning gaps into final facts.
 
 ## Edge Cases
 
@@ -83,7 +85,7 @@ conda run -n dev python -m pytest tests -q
 conda run -n dev python -m compileall app -q
 ```
 
-Result: 22 passed, 1 warning.
+Result: 66 passed, 1 warning.
 
 ```bash
 cd frontend

@@ -538,6 +538,11 @@ class ReviewTicket(BaseModel):
     source_query_hint: str = ""
     resolution_note: str = ""
     resolution_summary: str = ""
+    before_evidence_ids: list[str] = Field(default_factory=list)
+    added_evidence_ids: list[str] = Field(default_factory=list)
+    improved_claim_ids: list[str] = Field(default_factory=list)
+    before_claim_statuses: list[dict[str, Any]] = Field(default_factory=list)
+    after_claim_statuses: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str = Field(default_factory=now_iso)
     resolved_at: str = ""
 
@@ -586,6 +591,12 @@ class PricingPlan(BaseModel):
     product: str
     model: str
     tiers: list[str] = Field(default_factory=list)
+    price_points: list[str] = Field(default_factory=list)
+    billing_unit: str = ""
+    usage_limits: list[str] = Field(default_factory=list)
+    trial_or_free: str = ""
+    enterprise_terms: str = ""
+    data_gaps: list[str] = Field(default_factory=list)
     monetization_signal: str = ""
     evidence_ids: list[str] = Field(default_factory=list)
     confidence: Literal["high", "medium", "low"] = "medium"

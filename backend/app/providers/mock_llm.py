@@ -35,14 +35,37 @@ class MockLLMProvider(LLMProvider):
             total_claims = payload.get("trust_summary", {}).get("total_claim_count", 0)
             source_mix = payload.get("source_mix", {})
             third_party_ratio = source_mix.get("third_party_ratio", 0)
+            included_claims = payload.get("included_claims", [])
+            primary_claim = included_claims[0] if included_claims else {}
+            secondary_claim = included_claims[1] if len(included_claims) > 1 else primary_claim
+            primary_claim_id = primary_claim.get("claim_id", "")
+            secondary_claim_id = secondary_claim.get("claim_id", "")
+            primary_evidence = primary_claim.get("supporting_evidence", [])[:2] if isinstance(primary_claim.get("supporting_evidence"), list) else []
+            secondary_evidence = secondary_claim.get("supporting_evidence", [])[:2] if isinstance(secondary_claim.get("supporting_evidence"), list) else []
             return {
                 "executive_summary": [
-                    f"本报告围绕 {target} 与 {', '.join(competitors)} 的差异展开，当前有 {passed_claims}/{total_claims} 条结论通过证据复核。",
-                    f"第三方来源占比约为 {third_party_ratio:.0%}，应把它作为校准官方叙述的外部视角，而不是替代事实核验。",
+                    {
+                        "text": f"本报告围绕 {target} 与 {', '.join(competitors)} 的差异展开，当前有 {passed_claims}/{total_claims} 条结论通过证据复核。",
+                        "claim_ids": [primary_claim_id] if primary_claim_id else [],
+                        "evidence_ids": primary_evidence,
+                    },
+                    {
+                        "text": f"第三方来源占比约为 {third_party_ratio:.0%}，应把它作为校准官方叙述的外部视角，而不是替代事实核验。",
+                        "claim_ids": [secondary_claim_id] if secondary_claim_id else [],
+                        "evidence_ids": secondary_evidence,
+                    },
                 ],
                 "strategic_recommendations": [
-                    "发布前优先补齐价格、关键功能和用户反馈的交叉证据，避免报告只复述厂商材料。",
-                    "保留 Evidence ID 与 Resource 摘录，方便产品、增长和技术团队追溯每个判断的依据。",
+                    {
+                        "text": "发布前优先补齐价格、关键功能和用户反馈的交叉证据，避免报告只复述厂商材料。",
+                        "claim_ids": [primary_claim_id] if primary_claim_id else [],
+                        "evidence_ids": primary_evidence,
+                    },
+                    {
+                        "text": "保留 Evidence ID 与 Resource 摘录，方便产品、增长和技术团队追溯每个判断的依据。",
+                        "claim_ids": [secondary_claim_id] if secondary_claim_id else [],
+                        "evidence_ids": secondary_evidence,
+                    },
                 ],
                 "caveats": [
                     "Mock LLM 输出用于无密钥演示验证；真实发布前仍需使用 live provider 或人工复核。",

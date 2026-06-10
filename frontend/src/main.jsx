@@ -288,6 +288,19 @@ const emptySettingsForm = {
   ALLOW_EMPTY_SEARCH_FALLBACK: false,
 };
 
+const workspaceStages = [
+  ["home", "定义目标", "明确目标产品、竞品与分析问题"],
+  ["config", "配置证据", "选择来源、舆情和可信度门槛"],
+  ["result", "生成报告", "阅读结论并复核证据"],
+];
+
+function getWorkspaceStep(activeView, result, loading) {
+  if (loading) return "config";
+  if (result || activeView === "result") return "result";
+  if (activeView === "config" || activeView === "xhs-login") return "config";
+  return "home";
+}
+
 function App() {
   const [taskForm, setTaskForm] = useState(() => createEmptyTaskForm());
   const [surveyForm, setSurveyForm] = useState(() => ({ ...emptySurveyForm }));
@@ -828,15 +841,15 @@ function App() {
           </div>
         </div>
 
-        <button type="button" className="new-analysis-button" onClick={openConfigPage}>
+        <button type="button" className={`new-analysis-button ${activeView === "config" ? "active" : ""}`} onClick={openConfigPage}>
           <Play size={16} />
           新建真实分析
         </button>
-        <button type="button" className="secondary-nav-button" onClick={openSurveyPage}>
+        <button type="button" className={`secondary-nav-button ${activeView === "survey" ? "active" : ""}`} onClick={openSurveyPage}>
           <ClipboardList size={16} />
           用户调研问卷
         </button>
-        <button type="button" className="secondary-nav-button" onClick={openSettingsPage}>
+        <button type="button" className={`secondary-nav-button ${activeView === "settings" ? "active" : ""}`} onClick={openSettingsPage}>
           <Settings size={16} />
           系统设置
         </button>
@@ -855,14 +868,15 @@ function App() {
       <section id="main-workspace" className={`workspace ${result ? "has-result" : ""}`} ref={workspaceRef} tabIndex="-1">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{result ? "分析结果工作台" : activeView === "settings" ? "系统设置" : activeView === "survey" ? "用户调研问卷生成" : activeView === "xhs-login" ? "小红书登录引导" : "V1.2.1 产品化闭环"}</p>
-            <h1>{result ? `${result.task.config.target_product} 竞品分析` : activeView === "settings" ? "管理 API Key、LLM Provider 和搜索 Provider。" : activeView === "survey" ? "生成可直接投放和复盘的用户调研问卷。" : activeView === "xhs-login" ? "扫码登录小红书后继续舆情采集。" : "以证据为核心的竞品分析系统，支持检索、结论复核与可信度追踪。"}</h1>
+            <p className="eyebrow">{result ? "分析结果工作台" : activeView === "settings" ? "系统设置" : activeView === "survey" ? "用户调研问卷生成" : activeView === "xhs-login" ? "小红书登录引导" : activeView === "config" ? "定义目标 → 配置证据 → 生成报告" : "V1.2.1 产品化闭环"}</p>
+            <h1>{result ? `${result.task.config.target_product} 竞品分析` : activeView === "settings" ? "管理 API Key、LLM Provider 和搜索 Provider。" : activeView === "survey" ? "生成可直接投放和复盘的用户调研问卷。" : activeView === "xhs-login" ? "扫码登录小红书后继续舆情采集。" : activeView === "config" ? "配置一个分析任务" : "以证据为核心的竞品分析系统，支持检索、结论复核与可信度追踪。"}</h1>
           </div>
           <div className="status-pill">
             <Activity size={16} />
             {activeView === "settings" ? settingsSaving ? "保存中" : "设置" : activeView === "survey" ? surveyLoading ? "生成中" : "问卷" : activeView === "xhs-login" ? xhsStatus?.logged_in ? "已登录" : "待登录" : activeView === "config" ? "配置中" : result ? "已完成" : loading ? "运行中" : "就绪"}
           </div>
         </header>
+        <WorkspaceFlow activeView={activeView} result={result} loading={loading} />
 
         {loading && (
           <>
@@ -878,105 +892,286 @@ function App() {
           </>
         )}
 
-        {activeView === "settings" ? (
-          <SettingsView
-            form={settingsForm}
-            setForm={setSettingsForm}
-            meta={settingsMeta}
-            loading={settingsLoading}
-            saving={settingsSaving}
-            error={settingsError}
-            message={settingsMessage}
-            onRefresh={refreshSettings}
-            onSave={saveSettings}
-            skillCatalog={skillCatalog}
-            skillSelections={skillSelections}
-            setSkillSelections={setSkillSelections}
-            skillImportUrl={skillImportUrl}
-            setSkillImportUrl={setSkillImportUrl}
-            skillLicenseAck={skillLicenseAck}
-            setSkillLicenseAck={setSkillLicenseAck}
-            skillLoading={skillLoading}
-            skillSaving={skillSaving}
-            skillError={skillError}
-            skillMessage={skillMessage}
-            onSyncDefaultSkills={handleSyncDefaultSkills}
-            onImportGithubSkill={handleImportGithubSkill}
-            onSaveSkillAssignments={handleSaveSkillAssignments}
-          />
-        ) : activeView === "survey" ? (
-          <SurveyGeneratorView
-            form={surveyForm}
-            setForm={setSurveyForm}
-            result={surveyResult}
-            loading={surveyLoading}
-            error={surveyError}
-            onGenerate={launchSurveyGeneration}
-            onReset={() => {
-              setSurveyForm({ ...emptySurveyForm });
-              setSurveyResult(null);
-              setSurveyError("");
-            }}
-          />
-        ) : activeView === "xhs-login" ? (
-          <XhsLoginView
-            status={xhsStatus}
-            qrStatus={xhsQrStatus}
-            qrcode={xhsQrCode}
-            loading={xhsLoginLoading}
-            error={xhsLoginError}
-            onRefreshStatus={refreshXhsStatus}
-            onRefreshQrCode={refreshXhsQrCode}
-            onCheckQrCode={checkCurrentXhsQrCode}
-            onBack={openConfigPage}
-            onContinue={launchTask}
-          />
-        ) : activeView === "config" ? (
-          <ConfigView
-            form={taskForm}
-            setForm={setTaskForm}
+        <div className="workspace-layout">
+          <div className="workspace-main">
+            {activeView === "settings" ? (
+              <SettingsView
+                form={settingsForm}
+                setForm={setSettingsForm}
+                meta={settingsMeta}
+                loading={settingsLoading}
+                saving={settingsSaving}
+                error={settingsError}
+                message={settingsMessage}
+                onRefresh={refreshSettings}
+                onSave={saveSettings}
+                skillCatalog={skillCatalog}
+                skillSelections={skillSelections}
+                setSkillSelections={setSkillSelections}
+                skillImportUrl={skillImportUrl}
+                setSkillImportUrl={setSkillImportUrl}
+                skillLicenseAck={skillLicenseAck}
+                setSkillLicenseAck={setSkillLicenseAck}
+                skillLoading={skillLoading}
+                skillSaving={skillSaving}
+                skillError={skillError}
+                skillMessage={skillMessage}
+                onSyncDefaultSkills={handleSyncDefaultSkills}
+                onImportGithubSkill={handleImportGithubSkill}
+                onSaveSkillAssignments={handleSaveSkillAssignments}
+              />
+            ) : activeView === "survey" ? (
+              <SurveyGeneratorView
+                form={surveyForm}
+                setForm={setSurveyForm}
+                result={surveyResult}
+                loading={surveyLoading}
+                error={surveyError}
+                onGenerate={launchSurveyGeneration}
+                onReset={() => {
+                  setSurveyForm({ ...emptySurveyForm });
+                  setSurveyResult(null);
+                  setSurveyError("");
+                }}
+              />
+            ) : activeView === "xhs-login" ? (
+              <XhsLoginView
+                status={xhsStatus}
+                qrStatus={xhsQrStatus}
+                qrcode={xhsQrCode}
+                loading={xhsLoginLoading}
+                error={xhsLoginError}
+                onRefreshStatus={refreshXhsStatus}
+                onRefreshQrCode={refreshXhsQrCode}
+                onCheckQrCode={checkCurrentXhsQrCode}
+                onBack={openConfigPage}
+                onContinue={launchTask}
+              />
+            ) : activeView === "config" ? (
+              <ConfigView
+                form={taskForm}
+                setForm={setTaskForm}
+                loading={loading}
+                invalid={taskFormInvalid}
+                validationErrors={formValidationErrors}
+                error={error}
+                onRun={launchTask}
+                providerStatus={providerStatus}
+                providerLoading={providerLoading}
+                onReset={() => setTaskForm(createEmptyTaskForm())}
+              />
+            ) : result ? (
+              <>
+                {liveTrace.length > 0 && <StreamSummary liveTrace={liveTrace} streamState={streamState} />}
+                {actionMessage && <p className="success">{actionMessage}</p>}
+                <nav className="tabs" role="tablist" aria-label="分析结果视图">
+                  {[
+                    ["overview", "概览", LayoutDashboard],
+                    ["plan", "检索计划", ListChecks],
+                    ["matrix", "对比矩阵", Table2],
+                    ["claims", "证据与结论", Database],
+                    ["social", "舆情", Search],
+                    ["report", "最终报告", FileText],
+                    ["trace", "运行详情", GitBranch],
+                  ].map(([id, label, Icon]) => (
+                    <button key={id} role="tab" aria-selected={activeTab === id} className={activeTab === id ? "active" : ""} onClick={() => changeTab(id)}>
+                      <Icon size={16} />
+                      {label}
+                    </button>
+                  ))}
+                </nav>
+                {activeTab === "overview" && <OverviewView result={result} onChangeTab={changeTab} onConfigure={openConfigPage} />}
+                {activeTab === "trace" && <TraceView result={result} onTicketAction={handleTicketAction} />}
+                {activeTab === "plan" && <SearchPlanView result={result} />}
+                {activeTab === "matrix" && <MatrixView result={result} />}
+                {activeTab === "claims" && <ClaimsView result={result} onExcludeEvidence={handleEvidenceExclude} onRestoreEvidence={handleEvidenceRestore} />}
+                {activeTab === "social" && <SocialListeningView result={result} />}
+                {activeTab === "report" && <ReportView result={result} />}
+              </>
+            ) : (
+              <EmptyState loading={loading} liveTrace={liveTrace} streamState={streamState} onConfigure={openConfigPage} providerStatus={providerStatus} />
+            )}
+          </div>
+          <ContextRail
+            activeView={activeView}
+            activeTab={activeTab}
+            result={result}
             loading={loading}
-            invalid={taskFormInvalid}
+            taskForm={taskForm}
             validationErrors={formValidationErrors}
-            error={error}
-            onRun={launchTask}
             providerStatus={providerStatus}
-            providerLoading={providerLoading}
-            onReset={() => setTaskForm(createEmptyTaskForm())}
+            recentTasks={recentTasks}
+            liveTrace={liveTrace}
+            streamState={streamState}
+            onConfigure={openConfigPage}
+            onSettings={openSettingsPage}
+            onChangeTab={changeTab}
           />
-        ) : result ? (
-          <>
-            {liveTrace.length > 0 && <StreamSummary liveTrace={liveTrace} streamState={streamState} />}
-            {actionMessage && <p className="success">{actionMessage}</p>}
-            <nav className="tabs" role="tablist" aria-label="分析结果视图">
-              {[
-                ["overview", "概览", LayoutDashboard],
-                ["plan", "检索计划", ListChecks],
-                ["matrix", "对比矩阵", Table2],
-                ["claims", "证据与结论", Database],
-                ["social", "舆情", Search],
-                ["report", "最终报告", FileText],
-                ["trace", "运行详情", GitBranch],
-              ].map(([id, label, Icon]) => (
-                <button key={id} role="tab" aria-selected={activeTab === id} className={activeTab === id ? "active" : ""} onClick={() => changeTab(id)}>
-                  <Icon size={16} />
-                  {label}
-                </button>
-              ))}
-            </nav>
-            {activeTab === "overview" && <OverviewView result={result} onChangeTab={changeTab} onConfigure={openConfigPage} />}
-            {activeTab === "trace" && <TraceView result={result} onTicketAction={handleTicketAction} />}
-            {activeTab === "plan" && <SearchPlanView result={result} />}
-            {activeTab === "matrix" && <MatrixView result={result} />}
-            {activeTab === "claims" && <ClaimsView result={result} onExcludeEvidence={handleEvidenceExclude} onRestoreEvidence={handleEvidenceRestore} />}
-            {activeTab === "social" && <SocialListeningView result={result} />}
-            {activeTab === "report" && <ReportView result={result} />}
-          </>
-        ) : (
-          <EmptyState loading={loading} liveTrace={liveTrace} streamState={streamState} onConfigure={openConfigPage} providerStatus={providerStatus} />
-        )}
+        </div>
       </section>
     </main>
+  );
+}
+
+function WorkspaceFlow({ activeView, result, loading }) {
+  const currentStep = getWorkspaceStep(activeView, result, loading);
+  return (
+    <section className="workspace-flow" aria-label="分析工作流">
+      {workspaceStages.map(([id, label, description], index) => {
+        const status = id === currentStep ? "active" : workspaceStages.findIndex(([stepId]) => stepId === currentStep) > index ? "done" : "pending";
+        return (
+          <div className={`workspace-flow-step ${status}`} key={id}>
+            <span>{String(index + 1).padStart(2, "0")}</span>
+            <strong>{label}</strong>
+            <small>{description}</small>
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+function ContextRail({
+  activeView,
+  activeTab,
+  result,
+  loading,
+  taskForm,
+  validationErrors,
+  providerStatus,
+  recentTasks,
+  liveTrace,
+  streamState,
+  onConfigure,
+  onSettings,
+  onChangeTab,
+}) {
+  const providerReady = Boolean(providerStatus?.workflow_ready);
+  const unresolvedTickets = result?.review_tickets?.filter((ticket) => !["resolved", "dismissed"].includes(ticket.status)) || [];
+  const latestTrace = liveTrace[liveTrace.length - 1];
+  const formIssueCount = validationErrors.length;
+  const xhsRequired = taskForm ? taskNeedsXhsLogin(taskForm) : false;
+  const activeLabel = result ? "结果工作台" : activeView === "settings" ? "配置中心" : activeView === "survey" ? "调研生成" : activeView === "xhs-login" ? "登录确认" : activeView === "config" ? "任务配置" : "启动页";
+  const taskRunnable = !formIssueCount && providerReady && !xhsRequired;
+
+  return (
+    <aside className="context-rail" aria-label="当前任务上下文">
+      <section className="rail-card rail-hero">
+        <span>当前模式</span>
+        <strong>{activeLabel}</strong>
+        <p>{loading ? "Agent 正在运行，先观察实时追踪与证据计数。" : result ? "从概览进入报告，再回到证据和运行详情复核关键判断。" : "先把分析问题收束到目标、竞品、证据范围和 Provider 状态。"}</p>
+      </section>
+
+      {result ? (
+        <>
+          <section className="rail-card rail-metrics">
+            <div>
+              <span>来源</span>
+              <strong>{result.sources.length}</strong>
+            </div>
+            <div>
+              <span>证据</span>
+              <strong>{result.evidence.length}</strong>
+            </div>
+            <div>
+              <span>结论</span>
+              <strong>{result.claims.length}</strong>
+            </div>
+          </section>
+          <section className="rail-card">
+            <div className="rail-card-head">
+              <strong>证据门禁</strong>
+              <span className={`badge ${unresolvedTickets.length ? "open" : "passed"}`}>{unresolvedTickets.length ? `${unresolvedTickets.length} 个工单` : "已清空"}</span>
+            </div>
+            <p>证据覆盖率 {percent(result.report?.evidence_coverage_rate)}；未通过结论建议先在“证据与结论”中处理。</p>
+            <div className="rail-actions">
+              <button type="button" className={activeTab === "report" ? "active" : ""} onClick={() => onChangeTab("report")}>
+                <FileText size={15} />
+                最终报告
+              </button>
+              <button type="button" className={activeTab === "claims" ? "active" : ""} onClick={() => onChangeTab("claims")}>
+                <Database size={15} />
+                证据与结论
+              </button>
+              <button type="button" className={activeTab === "trace" ? "active" : ""} onClick={() => onChangeTab("trace")}>
+                <GitBranch size={15} />
+                运行详情
+              </button>
+            </div>
+          </section>
+        </>
+      ) : (
+        <>
+          <section className="rail-card">
+            <div className="rail-card-head">
+              <strong>任务完整度</strong>
+              <span className={`badge ${taskRunnable ? "passed" : "open"}`}>{taskRunnable ? "可运行" : formIssueCount ? `${formIssueCount} 项待补` : "待就绪"}</span>
+            </div>
+            <ul className="rail-checklist">
+              <li className={taskForm?.target_product?.trim() ? "done" : ""}>目标产品</li>
+              <li className={taskForm?.competitors?.length ? "done" : ""}>竞品范围</li>
+              <li className={splitList(taskForm?.goalsText || "").length ? "done" : ""}>分析目标</li>
+              <li className={providerReady ? "done" : ""}>Provider 就绪</li>
+              <li className={xhsRequired ? "pending" : "done"}>{xhsRequired ? "小红书登录待确认" : "舆情可选"}</li>
+            </ul>
+          </section>
+          <section className="rail-card">
+            <div className="rail-card-head">
+              <strong>下一步</strong>
+              <span className={`badge ${providerReady ? "passed" : "open"}`}>{providerReady ? "Provider 已就绪" : "去配置"}</span>
+            </div>
+            <p>{providerReady ? "填写完目标和证据范围后即可启动分析。" : "真实搜索和 LLM Provider 未就绪时，先进入系统设置补齐密钥。"}</p>
+            <div className="rail-actions">
+              <button type="button" className="active" onClick={onConfigure}>
+                <Play size={15} />
+                配置任务
+              </button>
+              <button type="button" onClick={onSettings}>
+                <Settings size={15} />
+                系统设置
+              </button>
+            </div>
+          </section>
+        </>
+      )}
+
+      {loading && (
+        <section className="rail-card">
+          <div className="rail-card-head">
+            <strong>实时追踪</strong>
+            <span className="badge active">{streamState?.trace_count || liveTrace.length} 条</span>
+          </div>
+          <p>{latestTrace ? `${translateNodeName(latestTrace.agent)}：${translateStructuredText(latestTrace.summary)}` : "正在等待第一个 Agent 事件。"}</p>
+        </section>
+      )}
+
+      <section className="rail-card">
+        <div className="rail-card-head">
+          <strong>最近运行</strong>
+          <span>{recentTasks.length} 个</span>
+        </div>
+        <p>{recentTasks[0] ? `${recentTasks[0].config.target_product} · ${statusCopy[recentTasks[0].status] || recentTasks[0].status}` : "还没有历史任务。完成一次分析后会出现在这里。"}</p>
+      </section>
+    </aside>
+  );
+}
+
+function TaskIntentStepper({ invalid, providerReady, loading }) {
+  const steps = [
+    ["定义目标", invalid ? "补齐目标、竞品和分析目标" : "目标范围已可用"],
+    ["配置证据", providerReady ? "搜索与 LLM Provider 已就绪" : "先去系统设置补齐 Provider"],
+    ["生成报告", loading ? "Agent 工作流运行中" : "运行后进入结果工作台"],
+  ];
+  return (
+    <section className="task-intent-stepper" aria-label="任务配置步骤">
+      {steps.map(([label, description], index) => (
+        <div className={`intent-step ${index === 0 && !invalid ? "done" : index === 1 && providerReady ? "done" : loading && index === 2 ? "active" : ""}`} key={label}>
+          <span>{String(index + 1).padStart(2, "0")}</span>
+          <strong>{label}</strong>
+          <small>{description}</small>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -1524,7 +1719,7 @@ function ConfigView({ form, setForm, loading, invalid, validationErrors, error, 
       <div className="config-head">
         <div>
           <p className="eyebrow">新建配置</p>
-          <h2>配置一个分析任务</h2>
+          <h2>任务定义与证据门禁</h2>
           <p>填写真实分析范围后，系统会调用当前配置的搜索和 LLM Provider，生成可复核的来源、证据、结论与报告。</p>
           <span className={`template-source ${providerStatus?.workflow_ready ? "ready" : "blocked"}`}>
             {providerLoading ? "正在检查 Provider..." : providerStatus?.workflow_ready ? "真实 Provider 已就绪" : "真实 Provider 未就绪"}
@@ -1547,6 +1742,7 @@ function ConfigView({ form, setForm, loading, invalid, validationErrors, error, 
           </div>
         </div>
       )}
+      <TaskIntentStepper invalid={invalid} providerReady={Boolean(providerStatus?.workflow_ready)} loading={loading} />
       <TaskForm form={form} setForm={setForm} validationErrors={validationErrors} />
       {error && <p className="error">{error}</p>}
     </section>
@@ -2709,6 +2905,8 @@ function TraceView({ result, onTicketAction }) {
                 <div><dt>缺失证据</dt><dd>{translateTaxonomyValue(ticket.missing_evidence_type, evidenceTypeCopy)}</dd></div>
                 <div><dt>来源偏好</dt><dd>{translateTaxonomyValue(ticket.preferred_source_type, sourcePreferenceCopy)}</dd></div>
                 <div><dt>重跑次数</dt><dd>{ticket.rerun_count || 0}/{ticket.max_reruns || 0}</dd></div>
+                <div><dt>新增证据</dt><dd>{ticket.added_evidence_ids?.length || 0} 条</dd></div>
+                <div><dt>改善结论</dt><dd>{ticket.improved_claim_ids?.length || 0} 条</dd></div>
               </dl>
               {resolutionText && <p className="note">{translateTicketText(resolutionText)}</p>}
               <div className="action-row">

@@ -13,8 +13,10 @@ from app.core.nodes import (
     planner_node,
     interaction_node,
     research_node,
+    resolve_review_ticket_improvements,
     social_listening_node,
     source_normalizer_node,
+    start_review_ticket_rerun,
     template_node,
     trust_summary_node,
     writer_node,
@@ -118,6 +120,7 @@ def rerun_review_ticket(result: WorkflowResult, ticket_id: str) -> WorkflowResul
     ticket = next(ticket for ticket in state.review_tickets if ticket.ticket_id == ticket_id)
     ticket.status = "open"
     if ticket.target_node == "InteractionAgent":
+        start_review_ticket_rerun(state, ticket)
         state = interaction_node(state)
     else:
         state = research_node(state)
@@ -126,6 +129,7 @@ def rerun_review_ticket(result: WorkflowResult, ticket_id: str) -> WorkflowResul
         state = interaction_node(state)
     state = analyst_node(state)
     state = evidence_reviewer_node(state)
+    resolve_review_ticket_improvements(state)
     state = trust_summary_node(state)
     state = writer_node(state)
     return state.result()

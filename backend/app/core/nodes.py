@@ -32,6 +32,7 @@ from app.models.schemas import (
     ToolCall,
     TrustSummary,
     UserPersona,
+    now_iso,
 )
 from app.providers.errors import ProviderRequestError
 from app.providers.factory import ProviderBundle, build_provider_bundle
@@ -304,6 +305,117 @@ def _query_for_ticket(state: GraphState, ticket: ReviewTicket) -> SearchQuery:
     )
 
 
+def _matching_ticket_evidence_ids(state: GraphState, ticket: ReviewTicket) -> list[str]:
+    if not ticket.product or not ticket.missing_evidence_type:
+        return []
+    return [
+        item.evidence_id
+        for item in state.evidence
+        if item.status == "active"
+        and item.product.casefold() == ticket.product.casefold()
+        and item.evidence_type.casefold() == ticket.missing_evidence_type.casefold()
+    ]
+
+
+def _matching_ticket_claim_ids(state: GraphState, ticket: ReviewTicket) -> list[str]:
+    evidence_ids = set(_matching_ticket_evidence_ids(state, ticket))
+    if not evidence_ids:
+        return []
+    return [
+        claim.claim_id
+        for claim in state.claims
+        if claim.verified_status == "passed"
+        and claim.included_in_report
+        and claim.product.casefold() == ticket.product.casefold()
+        and claim.claim_type.casefold() == ticket.missing_evidence_type.casefold()
+        and evidence_ids.intersection(claim.supporting_evidence)
+    ]
+
+
+def _matching_ticket_claim_statuses(state: GraphState, ticket: ReviewTicket) -> list[dict[str, object]]:
+    if not ticket.product or not ticket.missing_evidence_type:
+        return []
+    return [
+        {
+            "claim_id": claim.claim_id,
+            "product": claim.product,
+            "claim_type": claim.claim_type,
+            "verified_status": claim.verified_status,
+            "included_in_report": claim.included_in_report,
+            "supporting_evidence": list(claim.supporting_evidence),
+        }
+        for claim in state.claims
+        if claim.product.casefold() == ticket.product.casefold()
+        and claim.claim_type.casefold() == ticket.missing_evidence_type.casefold()
+    ]
+
+
+def _start_ticket_rerun_snapshot(state: GraphState, ticket: ReviewTicket) -> None:
+    ticket.status = "rerun_started"
+    if not ticket.added_evidence_ids and not ticket.improved_claim_ids:
+        ticket.before_evidence_ids = _matching_ticket_evidence_ids(state, ticket)
+        ticket.before_claim_statuses = _matching_ticket_claim_statuses(state, ticket)
+    ticket.added_evidence_ids = []
+    ticket.improved_claim_ids = []
+    ticket.after_claim_statuses = []
+
+
+def start_review_ticket_rerun(state: GraphState, ticket: ReviewTicket) -> None:
+    _start_ticket_rerun_snapshot(state, ticket)
+
+
+def resolve_review_ticket_improvements(state: GraphState) -> int:
+    resolved = 0
+    for ticket in state.review_tickets:
+        if ticket.status != "rerun_started":
+            continue
+        current = set(_matching_ticket_evidence_ids(state, ticket))
+        before = set(ticket.before_evidence_ids)
+        added = sorted(current - before)
+        after_statuses = _matching_ticket_claim_statuses(state, ticket)
+        before_passed = any(item.get("verified_status") == "passed" and item.get("included_in_report") for item in ticket.before_claim_statuses)
+        improved = [
+            claim_id
+            for claim_id in _matching_ticket_claim_ids(state, ticket)
+            if any(
+                claim.claim_id == claim_id and set(claim.supporting_evidence).intersection(added)
+                for claim in state.claims
+            )
+        ]
+        ticket.added_evidence_ids = added
+        ticket.improved_claim_ids = improved
+        ticket.after_claim_statuses = after_statuses
+        if added and improved and not before_passed:
+            ticket.status = "resolved"
+            ticket.resolution_summary = (
+                f"Rerun added {len(added)} matching evidence item(s) and improved {len(improved)} bound claim(s)."
+            )
+            ticket.resolved_at = now_iso()
+            resolved += 1
+        else:
+            ticket.resolution_summary = (
+                "Rerun did not prove a before/after claim improvement with newly bound evidence; keep this ticket in reviewer attention."
+            )
+    if resolved:
+        _trace(
+            state,
+            "CriticAgent",
+            "critic",
+            "review_ticket_improvement_verified",
+            f"Verified {resolved} Review Ticket improvement(s) through added evidence and improved claims.",
+            [ticket.ticket_id for ticket in state.review_tickets if ticket.status == "resolved" and ticket.added_evidence_ids],
+            output_payload={
+                ticket.ticket_id: {
+                    "added_evidence_ids": ticket.added_evidence_ids,
+                    "improved_claim_ids": ticket.improved_claim_ids,
+                }
+                for ticket in state.review_tickets
+                if ticket.status == "resolved" and ticket.added_evidence_ids
+            },
+        )
+    return resolved
+
+
 def _supplemental_query_hint(product_query: str, evidence_type: str) -> str:
     hints = {
         "pricing": f"{product_query} pricing plans review comparison alternatives",
@@ -523,13 +635,12 @@ def research_node(state: GraphState) -> GraphState:
     if supplement:
         found_pairs = {(raw["product"], raw["evidence_type"]) for raw in state.raw_sources}
         for ticket in open_research_tickets:
+            _start_ticket_rerun_snapshot(state, ticket)
             key = (ticket.product, ticket.missing_evidence_type)
             if key in found_pairs:
-                ticket.status = "resolved"
-                ticket.resolution_note = "Supplemental research added matching evidence."
+                ticket.resolution_note = "Supplemental research found matching raw sources; evidence binding will decide whether this ticket resolves."
             else:
-                ticket.status = "dismissed"
-                ticket.resolution_note = "No matching fixture source was available; related claims remain uncertain."
+                ticket.resolution_note = "No matching source was available yet; related claims remain uncertain."
         state.loop_count += 1
         _trace(
             state,
@@ -686,6 +797,33 @@ def _interaction_steps(raw: dict | None) -> list[str]:
     return []
 
 
+def _source_interaction_evidence(state: GraphState, source: Source) -> Evidence | None:
+    return next(
+        (
+            evidence
+            for evidence in state.evidence
+            if evidence.source_id == source.source_id
+            and evidence.product == source.product
+            and evidence.interaction_path
+            and evidence.evidence_type != "browser_interaction"
+        ),
+        None,
+    )
+
+
+def _is_real_browser_walkthrough_source(source: Source | None) -> bool:
+    return bool(source and source.source_type in {"browser_walkthrough", "official_browser_walkthrough"})
+
+
+def _interaction_verification_method(evidence: Evidence, source_by_id: dict[str, Source]) -> str:
+    source = source_by_id.get(evidence.source_id)
+    if _is_real_browser_walkthrough_source(source):
+        return "browser_walkthrough"
+    if source and source.source_type in {"fixture_walkthrough", "official_fixture_walkthrough"}:
+        return "fixture_walkthrough"
+    return "source_inference"
+
+
 def interaction_node(state: GraphState) -> GraphState:
     if state.task.config.domain != "ai_tools":
         _trace(state, "InteractionAgent", "interaction", "interaction_skipped", "Browser walkthrough evidence is required only for AI product analysis.")
@@ -702,26 +840,26 @@ def interaction_node(state: GraphState) -> GraphState:
     for source in list(state.sources):
         raw = raw_by_url.get(source.url)
         steps = _interaction_steps(raw)
+        fallback_evidence = None
+        if not steps:
+            fallback_evidence = _source_interaction_evidence(state, source)
+            steps = list(fallback_evidence.interaction_path) if fallback_evidence else []
         if not steps:
             skipped_products.add(source.product)
             continue
         key = (source.product.casefold(), "browser_interaction", " > ".join(steps).casefold())
         if key in existing_keys:
             continue
-        source_type = "official_browser_walkthrough" if source.source_type.startswith("official") else "browser_walkthrough"
+        source_type = "fixture_walkthrough"
         walkthrough_source = Source(
             task_id=state.task.task_id,
-            title=f"{source.product} browser walkthrough",
+            title=f"{source.product} fixture walkthrough",
             url=source.url,
             source_type=source_type,
             product=source.product,
-            query=f"browser walkthrough from {source.query}",
+            query=f"fixture walkthrough from {source.query}",
             confidence=source.confidence,
-            risk=(
-                "Demo walkthrough fixture; replace with live Browser/Playwright click evidence before production use."
-                if "Demo fixture" in source.risk
-                else source.risk
-            ),
+            risk="Structured walkthrough derived from source fields; not a live Browser/Playwright observation.",
             content="Clicked path: " + " > ".join(steps),
         )
         state.sources.append(walkthrough_source)
@@ -731,7 +869,11 @@ def interaction_node(state: GraphState) -> GraphState:
                 source_id=walkthrough_source.source_id,
                 product=source.product,
                 evidence_type="browser_interaction",
-                summary=str(raw.get("interaction_summary") or f"{source.product} workflow was observed through a click path: {' > '.join(steps)}."),
+                summary=str(
+                    (raw or {}).get("interaction_summary")
+                    or (fallback_evidence.summary if fallback_evidence else "")
+                    or f"{source.product} workflow was observed through a click path: {' > '.join(steps)}."
+                ),
                 quote_or_locator=" > ".join(steps),
                 interaction_path=steps,
                 confidence=source.confidence,
@@ -745,12 +887,12 @@ def interaction_node(state: GraphState) -> GraphState:
         ToolCall(
             task_id=state.task.task_id,
             agent="InteractionAgent",
-            tool="BrowserWalkthroughFixture",
-            operation="browser_walkthrough",
+            tool="StructuredWalkthroughExtractor",
+            operation="fixture_walkthrough",
             status="success" if created else "skipped",
-            results_summary=f"Created {created} browser interaction evidence item(s).",
+            results_summary=f"Created {created} structured interaction-path evidence item(s).",
             input_summary="Read interaction_steps attached to official product sources.",
-            output_summary=f"{created} browser_interaction evidence item(s).",
+            output_summary=f"{created} browser_interaction evidence item(s) with fixture_walkthrough provenance.",
             provider_mode="fixture" if created else "",
         )
     )
@@ -758,15 +900,15 @@ def interaction_node(state: GraphState) -> GraphState:
         state,
         "InteractionAgent",
         "interaction",
-        "browser_walkthrough_completed" if created else "browser_walkthrough_missing",
+        "fixture_walkthrough_completed" if created else "browser_walkthrough_missing",
         (
-            f"Created {created} browser interaction evidence item(s) from explicit click-path observations."
+            f"Created {created} structured interaction-path evidence item(s) from fixture/source fields; not counted as live browser verification."
             if created
             else "No explicit browser click-path observations were available; feature tree must mark interaction coverage as unverified."
         ),
         input_summary="InteractionAgent requires explicit click paths, not prose-only docs.",
-        output_summary=f"{created} browser_interaction evidence item(s); skipped products: {', '.join(sorted(skipped_products)) or '-'}",
-        output_payload={"created_count": created, "skipped_products": sorted(skipped_products)},
+        output_summary=f"{created} fixture_walkthrough evidence item(s); skipped products: {', '.join(sorted(skipped_products)) or '-'}",
+        output_payload={"created_count": created, "skipped_products": sorted(skipped_products), "provenance": "fixture_walkthrough"},
     )
     return state
 
@@ -1513,7 +1655,7 @@ def analyst_node(state: GraphState) -> GraphState:
     products = [state.task.config.target_product, *state.task.config.competitors]
     for product in products:
         evidence_items = by_product.get(product, [])
-        evidence_types = ["positioning", "pricing", "feature", "target_user", "security", "third_party_context"]
+        evidence_types = ["positioning", "pricing", "feature", "target_user", "security", "third_party_context", "contradiction"]
         if state.task.config.social_listening.enabled:
             evidence_types.append("social_sentiment")
         if state.task.config.domain == "ai_tools":
@@ -1892,6 +2034,7 @@ def _validated_enriched_claims(response: dict, state: GraphState) -> list[Claim]
 
 
 def critic_node(state: GraphState) -> GraphState:
+    resolve_review_ticket_improvements(state)
     open_research_ticket = any(ticket.status == "open" and ticket.target_node == "ResearchAgent" for ticket in state.review_tickets)
     if not open_research_ticket and state.loop_count < state.max_loops:
         created = _create_coverage_review_tickets(state)
@@ -2264,10 +2407,12 @@ def _validated_review_ticket_suggestions(response: dict, state: GraphState) -> l
 
 def _build_feature_tree(state: GraphState) -> FeatureTree:
     products = [state.task.config.target_product, *state.task.config.competitors]
+    source_by_id = {source.source_id: source for source in state.sources}
     children: list[FeatureTreeNode] = []
     for product in products:
         feature_evidence = [item for item in state.evidence if item.product == product and item.evidence_type == "feature" and item.status == "active"]
         interaction_evidence = [item for item in state.evidence if item.product == product and item.evidence_type == "browser_interaction" and item.status == "active"]
+        real_interaction_evidence = [item for item in interaction_evidence if _interaction_verification_method(item, source_by_id) == "browser_walkthrough"]
         agent_evidence = [item for item in state.evidence if item.product == product and item.evidence_type == "agent_capability" and item.status == "active"]
         security_evidence = [item for item in state.evidence if item.product == product and item.evidence_type == "security" and item.status == "active"]
         interaction_children = [
@@ -2276,37 +2421,39 @@ def _build_feature_tree(state: GraphState) -> FeatureTree:
                 description=item.summary,
                 evidence_ids=[item.evidence_id],
                 interaction_path=item.interaction_path,
-                verification_method="browser_walkthrough",
+                verification_method=_interaction_verification_method(item, source_by_id),
             )
             for item in interaction_evidence
         ]
         product_children = [
             FeatureTreeNode(
-                name="Browser-tested workflow",
+                name="交互路径",
                 description=(
-                    "Observed click-path evidence is available; use these leaves as the verified function tree."
+                    "已有真实浏览器点击路径证据，可把这些叶子节点作为已验证上手链路来评估。"
+                    if real_interaction_evidence
+                    else "当前只有结构化交互路径，适合用于旅程假设，不应当作真实浏览器实测。"
                     if interaction_children
-                    else "No browser walkthrough evidence is available; this product's function tree is not interaction-verified."
+                    else "当前没有浏览器实测证据，功能树不能视为已验证交互路径。"
                 ),
                 evidence_ids=[item.evidence_id for item in interaction_evidence],
-                verification_method="browser_walkthrough" if interaction_children else "unverified",
+                verification_method="browser_walkthrough" if real_interaction_evidence else "fixture_walkthrough" if interaction_children else "unverified",
                 children=interaction_children,
             ),
             FeatureTreeNode(
-                name="Source-inferred product workflow",
-                description=(feature_evidence[0].summary if feature_evidence else "Feature coverage requires supplemental evidence."),
+                name="资料推断工作流",
+                description=(feature_evidence[0].summary if feature_evidence else "功能覆盖仍需补充证据。"),
                 evidence_ids=[item.evidence_id for item in feature_evidence],
                 verification_method="source_inference" if feature_evidence else "unverified",
             ),
             FeatureTreeNode(
-                name="Agent / AI workflow",
-                description=(agent_evidence[0].summary if agent_evidence else "Agent capability is not explicitly covered by current evidence."),
+                name="Agent / AI 链路",
+                description=(agent_evidence[0].summary if agent_evidence else "当前证据没有明确覆盖 Agent 能力。"),
                 evidence_ids=[item.evidence_id for item in agent_evidence],
                 verification_method="source_inference" if agent_evidence else "unverified",
             ),
             FeatureTreeNode(
-                name="Team / security readiness",
-                description=(security_evidence[0].summary if security_evidence else "Security readiness is an open adoption-risk check."),
+                name="团队与安全准备度",
+                description=(security_evidence[0].summary if security_evidence else "安全准备度仍是开放的采用风险检查项。"),
                 evidence_ids=[item.evidence_id for item in security_evidence],
                 verification_method="source_inference" if security_evidence else "unverified",
             ),
@@ -2314,7 +2461,7 @@ def _build_feature_tree(state: GraphState) -> FeatureTree:
         children.append(
             FeatureTreeNode(
                 name=product,
-                description=f"Capability tree for {product}; browser-tested leaves are separated from source-inferred leaves.",
+                description=f"{product} 的能力树会区分结构化路径、真实浏览器链路和资料推断能力，避免把功能描述误当成真实体验。",
                 verification_method="mixed",
                 children=product_children,
             )
@@ -2329,14 +2476,13 @@ def _build_feature_tree(state: GraphState) -> FeatureTree:
     total = len(children)
     return FeatureTree(
         root=FeatureTreeNode(
-            name=f"{state.task.config.target_product} competitive user journey",
-            description="User Journey separates browser-observed workflows from source-inferred product claims.",
+            name=f"{state.task.config.target_product} 竞品用户旅程",
+            description="用户旅程会区分真实浏览器链路、结构化路径和资料推断结论，帮助 PM 判断哪些体验已经验证、哪些仍需补测。",
             verification_method="mixed",
             children=children,
         ),
         coverage_note=(
-            f"{browser_verified_products}/{total} products have browser-observed workflow evidence; "
-            "source-inferred leaves are useful for research but are not treated as verified function paths."
+            f"{browser_verified_products}/{total} 个产品已有浏览器实测工作流证据；资料推断叶子可用于调研，但不能当作已验证功能路径。"
         ),
     )
 
@@ -2356,14 +2502,27 @@ def _build_pricing_model(state: GraphState) -> PricingModel:
         if pricing_evidence:
             summary = pricing_evidence[0].summary
             tiers = _pricing_tiers_from_summary(summary)
+            detail_text = " ".join([item.summary for item in pricing_evidence])
+            details = _pricing_details_from_text(detail_text)
             plans.append(
                 PricingPlan(
                     product=product,
                     model="Published subscription tiers",
                     tiers=tiers,
+                    price_points=list(details["price_points"]),
+                    billing_unit=str(details["billing_unit"]),
+                    usage_limits=list(details["usage_limits"]),
+                    trial_or_free=str(details["trial_or_free"]),
+                    enterprise_terms=str(details["enterprise_terms"]),
+                    data_gaps=list(details["data_gaps"]),
                     monetization_signal=summary,
                     evidence_ids=[item.evidence_id for item in pricing_evidence],
                     confidence=_bounded_claim_confidence("high", pricing_evidence, source_by_id),
+                    risk=(
+                        f"缺少 {', '.join(details['data_gaps'])}，不能做价格优劣排序。"
+                        if details["data_gaps"]
+                        else ""
+                    ),
                 )
             )
         else:
@@ -2375,6 +2534,7 @@ def _build_pricing_model(state: GraphState) -> PricingModel:
                     monetization_signal="Pricing evidence is missing; do not infer plan structure.",
                     evidence_ids=[],
                     confidence="low",
+                    data_gaps=["金额", "计费单位", "额度/限制", "试用/免费策略", "企业条款"],
                     risk="Pricing gap should trigger supplemental research or a downgraded report claim.",
                 )
             )
@@ -2394,44 +2554,264 @@ def _pricing_tiers_from_summary(summary: str) -> list[str]:
     return tiers or ["Published plan structure"]
 
 
+def _pricing_details_from_text(text: str) -> dict[str, list[str] | str]:
+    normalized = " ".join(str(text or "").split())
+    lowered = normalized.casefold()
+    price_points = sorted(set(re.findall(r"(?:\$|￥|¥)\s?\d+(?:\.\d+)?(?:\s?/\s?(?:month|mo|year|yr|seat|user|月|年|席位|用户))?", normalized, flags=re.IGNORECASE)))
+    billing_terms = []
+    for term in ["per month", "monthly", "per year", "annual", "per seat", "per user", "按月", "按年", "席位", "用户"]:
+        if term in lowered or term in normalized:
+            billing_terms.append(term)
+    usage_limits = []
+    for pattern in [
+        r"\b\d+\s?(?:requests|messages|credits|seats|users|tokens)\b",
+        r"\b(?:usage limits|rate limits|limited|unlimited)\b",
+        r"(?:额度|限制|席位|用量|调用)\S{0,12}",
+    ]:
+        usage_limits.extend(re.findall(pattern, normalized, flags=re.IGNORECASE))
+    trial_or_free = ""
+    if any(term in lowered for term in ["free", "trial", "免费", "试用"]):
+        trial_or_free = "包含免费或试用信号"
+    enterprise_terms = ""
+    if any(term in lowered for term in ["enterprise", "business", "team", "teams", "企业", "团队", "商业"]):
+        enterprise_terms = "包含团队/企业条款信号"
+    data_gaps = []
+    if not price_points:
+        data_gaps.append("金额")
+    if not billing_terms:
+        data_gaps.append("计费单位")
+    if not usage_limits:
+        data_gaps.append("额度/限制")
+    if not trial_or_free:
+        data_gaps.append("试用/免费策略")
+    if not enterprise_terms:
+        data_gaps.append("企业条款")
+    return {
+        "price_points": price_points,
+        "billing_unit": " / ".join(sorted(set(billing_terms))),
+        "usage_limits": sorted(set(usage_limits))[:4],
+        "trial_or_free": trial_or_free,
+        "enterprise_terms": enterprise_terms,
+        "data_gaps": data_gaps,
+    }
+
+
+def _analysis_context_text(state: GraphState) -> str:
+    parts = [
+        state.task.config.domain,
+        state.task.config.target_product,
+        *state.task.config.competitors,
+        state.task.config.audience,
+        *state.task.config.analysis_goals,
+        *[item.summary for item in state.evidence[:20]],
+    ]
+    return " ".join(str(part or "") for part in parts).casefold()
+
+
+def _analysis_context(state: GraphState) -> str:
+    text = _analysis_context_text(state)
+    collaboration_keywords = [
+        "飞书",
+        "钉钉",
+        "lark",
+        "dingtalk",
+        "协同",
+        "协作",
+        "开放接口",
+        "配置",
+        "权限",
+        "知识库",
+        "审批",
+        "组织",
+    ]
+    ai_coding_keywords = [
+        "cursor",
+        "copilot",
+        "windsurf",
+        "trae",
+        "code",
+        "coding",
+        "developer",
+        "editor",
+        "代码",
+        "编程",
+        "开发者",
+        "工程",
+    ]
+    if any(keyword in text for keyword in collaboration_keywords):
+        return "collaboration_saas"
+    if state.task.config.domain == "ai_tools" and any(keyword in text for keyword in ai_coding_keywords):
+        return "ai_coding"
+    if state.task.config.domain == "saas":
+        return "saas"
+    return "general_product"
+
+
+def _decision_judgment_line(state: GraphState, target_flow: Claim | None) -> str:
+    target = state.task.config.target_product
+    context = _analysis_context(state)
+    if not target_flow:
+        if context == "collaboration_saas":
+            return (
+                f"- **推荐判断**：{target} 目前缺少可验证协同旅程，不能只凭功能描述做采购判断；下一轮应优先验证跨团队任务、开放接口和配置成本是否真的形成低摩擦协同闭环。"
+            )
+        if context == "ai_coding":
+            return f"- **推荐判断**：{target} 的可发布判断仍缺少可验证开发工作流，建议先补用户旅程再比较定位。"
+        return f"- **推荐判断**：{target} 的可发布判断仍缺少可验证用户旅程，建议先补高频任务链路再比较定位。"
+    if context == "collaboration_saas":
+        return (
+            f"- **推荐判断**：{target} 不应只按“协同套件功能多少”来评审，当前更适合判断它能否把跨团队任务、开放接口和配置成本收敛为低摩擦协同闭环。"
+        )
+    if context == "ai_coding":
+        return (
+            f"- **推荐判断**：{target} 不应只按“AI 编程工具”定位参赛，当前更适合主打“编辑器内闭环工作流 + 代码上下文”的效率叙事。"
+        )
+    if context == "saas":
+        return (
+            f"- **推荐判断**：{target} 不应只按功能清单参赛，当前更适合围绕核心业务流程、权限治理和实施成本讲清楚采用理由。"
+        )
+    return f"- **推荐判断**：{target} 的比较重点应从“有什么功能”转向“解决哪类高频任务、降低哪类决策成本、还缺哪些采用证据”。"
+
+
+def _procurement_response_terms(state: GraphState) -> str:
+    context = _analysis_context(state)
+    if context == "collaboration_saas":
+        return "组织权限、流程配置、开放接口、迁移成本和跨部门采用阻力"
+    if context == "ai_coding":
+        return "团队治理、安全、代码上下文质量和迁移成本"
+    if context == "saas":
+        return "权限治理、实施成本、数据安全和续费风险"
+    return "采用门槛、切换成本、风险控制和核心场景留存"
+
+
+def _trial_response_terms(state: GraphState) -> str:
+    context = _analysis_context(state)
+    if context == "collaboration_saas":
+        return "首周协同任务能否形成稳定复用，而不是只完成账号开通"
+    if context == "ai_coding":
+        return "试用后留存来自真实开发链路而不是短期新鲜感"
+    if context == "saas":
+        return "试用期是否覆盖真实业务流程和团队协作角色"
+    return "试用体验是否能转成稳定高频使用"
+
+
 def _build_user_personas(state: GraphState) -> list[UserPersona]:
     target = state.task.config.target_product
     persona_evidence = [item for item in state.evidence if item.evidence_type == "target_user" and item.status == "active"]
     target_evidence = [item for item in persona_evidence if item.product == target] or persona_evidence[:2]
+    context = _analysis_context(state)
+    if context == "collaboration_saas":
+        return [
+            UserPersona(
+                name="跨团队协同负责人",
+                segment="业务团队 / 协同流程 owner",
+                jobs_to_be_done=[
+                    "把会议、文档、任务、审批或知识沉淀串成可复用流程。",
+                    "降低多团队协作中的信息丢失、重复配置和沟通成本。",
+                ],
+                pains=[
+                    "工具功能多但落不到稳定流程，培训和推广成本高。",
+                    "跨系统集成、权限配置和组织边界容易拖慢上线。",
+                ],
+                decision_criteria=[
+                    "高频协同任务的端到端完成率",
+                    "开放接口和集成生态",
+                    "权限、审计和组织治理能力",
+                ],
+                evidence_ids=[item.evidence_id for item in target_evidence[:2]],
+            ),
+            UserPersona(
+                name="IT 与平台管理员",
+                segment="企业采购 / 信息化团队",
+                jobs_to_be_done=[
+                    "评估协同平台是否能安全接入现有身份、权限和数据体系。",
+                    "在推广效率与治理风险之间形成可落地的采购建议。",
+                ],
+                pains=[
+                    "安全、权限和数据留存材料不足会阻断采购评审。",
+                    "接口配置门槛高会让业务团队把平台视为额外负担。",
+                ],
+                decision_criteria=[
+                    "安全与合规材料完整度",
+                    "集成实施成本",
+                    "组织级管理与审计能力",
+                ],
+                evidence_ids=[item.evidence_id for item in persona_evidence[:4]],
+            ),
+        ]
+    if context not in {"ai_coding", "collaboration_saas"}:
+        return [
+            UserPersona(
+                name="核心场景使用者",
+                segment="一线用户 / 高频任务执行者",
+                jobs_to_be_done=[
+                    "更快完成当前产品承诺的核心任务。",
+                    "在不增加学习成本的前提下获得稳定结果。",
+                ],
+                pains=[
+                    "功能描述容易停留在表层，难以判断是否真的解决日常任务。",
+                    "缺少第三方或真实使用样本时，采用风险难以评估。",
+                ],
+                decision_criteria=[
+                    "核心任务完成质量",
+                    "学习与迁移成本",
+                    "真实用户反馈和第三方验证",
+                ],
+                evidence_ids=[item.evidence_id for item in target_evidence[:2]],
+            ),
+            UserPersona(
+                name="采购与增长决策者",
+                segment="业务负责人 / 产品团队",
+                jobs_to_be_done=[
+                    "判断产品差异点是否足以支持定位、定价或增长动作。",
+                    "把风险和不确定性转成下一轮调研或实验清单。",
+                ],
+                pains=[
+                    "只有功能罗列时，难以形成资源投入优先级。",
+                    "价格、风险和外部评价缺口会影响正式决策。",
+                ],
+                decision_criteria=[
+                    "差异化是否具体",
+                    "商业化信号是否完整",
+                    "下一步行动是否可执行",
+                ],
+                evidence_ids=[item.evidence_id for item in persona_evidence[:4]],
+            ),
+        ]
     personas = [
         UserPersona(
-            name="Individual AI-assisted developer",
-            segment="Builder / IC engineer",
+            name="个人 AI 辅助开发者",
+            segment="Builder / IC 工程师",
             jobs_to_be_done=[
-                "Complete coding tasks faster inside the development environment.",
-                "Use codebase-aware assistance without constantly switching tools.",
+                "在开发环境内更快完成编码、理解和修改任务。",
+                "减少编辑器、文档和对话工具之间的上下文切换。",
             ],
             pains=[
-                "Context switching between editor, docs, and chat tools.",
-                "Unclear trust boundary when AI output is not evidence-backed.",
+                "AI 输出质量依赖代码上下文，但上下文边界经常不透明。",
+                "价格、额度和试用限制不清晰时，难以评估长期使用成本。",
             ],
             decision_criteria=[
-                "Quality of codebase context",
-                "Speed of iteration",
-                "Transparent pricing and usage limits",
+                "代码库上下文质量",
+                "迭代速度",
+                "清晰的价格、额度和使用限制",
             ],
             evidence_ids=[item.evidence_id for item in target_evidence[:2]],
         ),
         UserPersona(
-            name="Engineering team lead",
-            segment="Team / platform buyer",
+            name="工程团队负责人",
+            segment="团队 / 平台采购者",
             jobs_to_be_done=[
-                "Standardize AI coding assistance across a team.",
-                "Evaluate productivity upside against security, privacy, and cost controls.",
+                "评估 AI 编程工具是否能在团队内标准化采用。",
+                "在效率提升、安全隐私和成本控制之间形成采购建议。",
             ],
             pains=[
-                "Security review slows adoption when vendor controls are unclear.",
-                "Pricing comparisons are difficult when plan limits differ.",
+                "厂商安全控制不清晰会拖慢采购和安全评审。",
+                "不同套餐额度不可比时，价格优劣很容易被误判。",
             ],
             decision_criteria=[
-                "Admin controls and security posture",
-                "Team plan clarity",
-                "Evidence-backed feature coverage",
+                "管理员控制与安全姿态",
+                "团队套餐清晰度",
+                "真实工作流覆盖",
             ],
             evidence_ids=[item.evidence_id for item in persona_evidence[:4]],
         ),
@@ -2443,25 +2823,40 @@ def _build_swot(state: GraphState, included: list[Claim], uncertain: list[Claim]
     target = state.task.config.target_product
     evidence_ids = [evidence_id for claim in included for evidence_id in claim.supporting_evidence][:12]
     target_claims = [claim for claim in included if claim.product == target]
+    target_feature_claim = next((claim for claim in target_claims if claim.claim_type in {"feature", "browser_interaction", "agent_capability"}), None)
+    target_pricing_claim = next((claim for claim in target_claims if claim.claim_type == "pricing"), None)
+    target_security_claim = next((claim for claim in target_claims if claim.claim_type == "security"), None)
     competitor_count = len(state.task.config.competitors)
     unresolved_tickets = [ticket for ticket in state.review_tickets if ticket.status in {"open", "accepted", "rerun_started"}]
     downgraded_or_uncertain = [claim for claim in uncertain if claim.product == target or claim.product in {"Opportunity", "Risk"}]
     return SwotAnalysis(
         strengths=[
-            (target_claims[0].claim if target_claims else f"{target} has at least one evidence-backed product-positioning signal."),
-            "The report binds claims to evidence IDs, making product and PM review auditable.",
+            (
+                f"{target} 的优势不应只写成“AI 工具定位”，而是可落在实测工作流和代码上下文能力上：{_plain_summary(target_feature_claim.claim)}。"
+                if target_feature_claim
+                else f"{target} 目前至少有定位证据，但需要补充可操作工作流证据。"
+            ),
+            (
+                f"商业化表达已有官方证据支撑：{_plain_summary(target_pricing_claim.claim)}，适合进入套餐与额度的下一轮拆解。"
+                if target_pricing_claim
+                else "商业化证据不足，不能支撑价格竞争判断。"
+            ),
         ],
         weaknesses=[
-            "Missing or downgraded evidence is excluded from final claims instead of being treated as fact.",
-            f"{len(downgraded_or_uncertain)} target-adjacent claim(s) still need reviewer attention.",
+            (
+                f"安全与企业采购材料仍需要和实际客户案例交叉验证：{_plain_summary(target_security_claim.claim)}。"
+                if target_security_claim
+                else "安全、隐私和企业采购证据不足，会影响团队版落地判断。"
+            ),
+            f"{len(downgraded_or_uncertain)} 个目标产品相关判断仍需复核，不能进入对外发布结论。",
         ],
         opportunities=[
-            "Use user-journey gaps to prioritize follow-up research and product messaging comparison.",
-            f"Compare {competitor_count} competitor(s) through pricing and persona fit rather than a single score.",
+            "把用户旅程中的“实测路径”转成产品卖点和 onboarding 对比，而不是继续堆功能清单。",
+            f"对 {competitor_count} 个竞品按采购场景分层比较：个人效率、团队治理、企业安全、价格额度。",
         ],
         threats=[
-            f"{len(unresolved_tickets)} unresolved Review Ticket(s) can block external publication.",
-            "Live provider results may differ from demo fixtures, so provider mode must be disclosed.",
+            f"{len(unresolved_tickets)} 个未解决 Review Ticket 会直接影响报告是否可发布。",
+            "如果第三方评测和社媒样本不足，报告容易偏向厂商叙述，难以支撑真实用户侧优先级。",
         ],
         evidence_ids=evidence_ids,
     )
@@ -2472,12 +2867,14 @@ def _feature_tree_markdown(node: FeatureTreeNode, depth: int = 0) -> list[str]:
     evidence = f"（证据：{', '.join(node.evidence_ids)}）" if node.evidence_ids else ""
     method = {
         "browser_walkthrough": "实测",
+        "fixture_walkthrough": "结构化路径",
         "source_inference": "文档/搜索推断",
         "unverified": "未实测",
         "mixed": "混合",
     }.get(node.verification_method, node.verification_method)
     path = f"；路径：{' > '.join(node.interaction_path)}" if node.interaction_path else ""
-    lines = [f"{prefix}**{node.name}** [{method}]：{node.description}{path}{evidence}"]
+    description = _plain_summary(node.description) if node.description else ""
+    lines = [f"{prefix}**{node.name}** [{method}]：{description}{path}{evidence}"]
     for child in node.children:
         lines.extend(_feature_tree_markdown(child, depth + 1))
     return lines
@@ -2493,6 +2890,209 @@ def _swot_lines(swot: SwotAnalysis) -> list[str]:
     ]
 
 
+def _claim_lookup(claims: list[Claim]) -> dict[tuple[str, str], Claim]:
+    return {(claim.product, claim.claim_type): claim for claim in claims}
+
+
+def _product_claim(claims_by_key: dict[tuple[str, str], Claim], product: str, claim_type: str) -> Claim | None:
+    return claims_by_key.get((product, claim_type))
+
+
+def _decision_summary_lines(state: GraphState, included: list[Claim], trust: TrustSummary, source_mix: dict[str, float | int | str]) -> list[str]:
+    target = state.task.config.target_product
+    competitors = state.task.config.competitors
+    claims_by_key = _claim_lookup(included)
+    target_flow = _product_claim(claims_by_key, target, "browser_interaction") or _product_claim(claims_by_key, target, "feature")
+    target_pricing = _product_claim(claims_by_key, target, "pricing")
+    competitor_with_enterprise = next(
+        (
+            competitor
+            for competitor in competitors
+            if (claim := _product_claim(claims_by_key, competitor, "pricing")) and "enterprise" in claim.claim.casefold()
+        ),
+        "",
+    )
+    competitor_with_free = next(
+        (
+            competitor
+            for competitor in competitors
+            if (claim := _product_claim(claims_by_key, competitor, "pricing")) and "free" in claim.claim.casefold()
+        ),
+        "",
+    )
+    lines = [
+        "",
+        "## 决策摘要",
+        _decision_judgment_line(state, target_flow),
+        (
+            f"- **商业化判断**：已有套餐结构证据，但报告未拿到金额、额度和计费单位，因此只能比较包装策略，不能下价格高低结论。{_evidence_ref(target_pricing.supporting_evidence if target_pricing else [])}"
+        ),
+    ]
+    if competitor_with_enterprise:
+        lines.append(f"- **采购场景**：若受众是中大型团队，{competitor_with_enterprise} 的 Business/Enterprise 叙事会天然进入候选；{target} 需要用{_procurement_response_terms(state)}来回应。")
+    if competitor_with_free:
+        lines.append(f"- **试用场景**：{competitor_with_free} 有免费/付费组合信号，可能降低首次试用门槛；{target} 需要证明{_trial_response_terms(state)}。")
+    lines.append(
+        f"- **可信边界**：当前第三方来源占比 {float(source_mix['third_party_ratio']):.0%}、未解决工单 {trust.unresolved_ticket_count} 个；低第三方覆盖时，报告更适合做内部评审初稿，而不是直接对外引用。"
+    )
+    return lines
+
+
+def _decision_evidence_grade(trust: TrustSummary, source_mix: dict[str, float | int | str]) -> str:
+    third_party_ratio = float(source_mix["third_party_ratio"])
+    if trust.unresolved_ticket_count or trust.blocked_claim_count:
+        return "C"
+    if trust.claim_evidence_binding_rate >= 0.9 and third_party_ratio >= THIRD_PARTY_SOURCE_RATIO_TARGET and trust.browser_verified_product_count:
+        return "A"
+    if trust.claim_evidence_binding_rate >= 0.75:
+        return "B"
+    return "C"
+
+
+def _external_use_status(trust: TrustSummary, source_mix: dict[str, float | int | str]) -> str:
+    if trust.unresolved_ticket_count or trust.blocked_claim_count:
+        return "不可外发，先处理阻断项"
+    if float(source_mix["third_party_ratio"]) < THIRD_PARTY_SOURCE_RATIO_TARGET:
+        return "内部评审可用，正式外发前需补第三方样本"
+    return "可进入正式评审"
+
+
+def _pricing_gap_summary(pricing_model: PricingModel) -> str:
+    gap_products = [f"{plan.product}({', '.join(plan.data_gaps)})" for plan in pricing_model.plans if plan.data_gaps]
+    return "；".join(gap_products) if gap_products else "定价结构字段较完整"
+
+
+def _quality_rubric_lines(state: GraphState, included: list[Claim], trust: TrustSummary, source_mix: dict[str, float | int | str], pricing_model: PricingModel) -> list[str]:
+    comparative_count = len([claim for claim in included if claim.claim_type.startswith("comparative")])
+    opportunity_count = len([claim for claim in included if claim.claim_type == "opportunity"])
+    pricing_gap_count = sum(len(plan.data_gaps) for plan in pricing_model.plans)
+    scenario_fit = "协同 SaaS" if _analysis_context(state) == "collaboration_saas" else "AI 编程/开发工具" if _analysis_context(state) == "ai_coding" else "通用产品"
+    return [
+        f"- 差异洞察：{comparative_count} 条横向结论、{opportunity_count} 条机会结论；低于 2 条时不能作为路线决策稿。",
+        f"- 行动可执行性：已生成补外部样本、补价格深度、补真实用户验证、补采购风险四类动作；定价字段缺口 {pricing_gap_count} 项。",
+        f"- 风险边界：证据等级 {_decision_evidence_grade(trust, source_mix)}，外发状态为“{_external_use_status(trust, source_mix)}”。",
+        f"- 场景适配：当前按“{scenario_fit}”语境组织画像和推荐判断，避免把一种产品模板套到另一种场景。",
+    ]
+
+
+def _pm_decision_page_lines(
+    state: GraphState,
+    included: list[Claim],
+    trust: TrustSummary,
+    source_mix: dict[str, float | int | str],
+    pricing_model: PricingModel,
+) -> list[str]:
+    target = state.task.config.target_product
+    external_status = _external_use_status(trust, source_mix)
+    evidence_grade = _decision_evidence_grade(trust, source_mix)
+    priority = "P0" if trust.unresolved_ticket_count or trust.blocked_claim_count else "P1" if float(source_mix["third_party_ratio"]) < THIRD_PARTY_SOURCE_RATIO_TARGET else "P2"
+    risk_level = "高" if trust.unresolved_ticket_count or trust.blocked_claim_count else "中" if evidence_grade == "B" else "低"
+    recommended_action = (
+        "先关闭阻断工单，再进入产品评审"
+        if trust.unresolved_ticket_count or trust.blocked_claim_count
+        else "作为 PM 内部评审稿使用，并并行补齐外部样本与定价字段"
+        if float(source_mix["third_party_ratio"]) < THIRD_PARTY_SOURCE_RATIO_TARGET or any(plan.data_gaps for plan in pricing_model.plans)
+        else "进入正式评审，重点讨论路线取舍和采购风险"
+    )
+    lines = [
+        "",
+        "## PM 决策页",
+        f"- **一句话结论**：{target} 当前可以进入“{external_status}”的决策流程；不要把它当作单一排名报告，而应作为场景取舍、风险清单和下一轮验证计划。",
+        f"- **建议动作**：{recommended_action}。",
+        f"- **优先级 / 风险 / 证据等级**：{priority} / {risk_level} / {evidence_grade}。",
+        f"- **定价决策缺口**：{_pricing_gap_summary(pricing_model)}；缺少金额、额度或计费单位时，只能比较商业化包装，不能判断价格高低。",
+        f"- **是否可对外**：{external_status}。",
+        "- **质量 rubric**：",
+        *_quality_rubric_lines(state, included, trust, source_mix, pricing_model),
+    ]
+    return lines
+
+
+def _differentiated_insight_lines(state: GraphState, included: list[Claim]) -> list[str]:
+    products = [state.task.config.target_product, *state.task.config.competitors]
+    claims_by_key = _claim_lookup(included)
+    lines = ["", "## 关键差异洞察"]
+    for product in products:
+        flow = _product_claim(claims_by_key, product, "browser_interaction")
+        pricing = _product_claim(claims_by_key, product, "pricing")
+        security = _product_claim(claims_by_key, product, "security")
+        persona = _product_claim(claims_by_key, product, "target_user")
+        if not any([flow, pricing, security, persona]):
+            lines.append(f"- **{product}**：当前证据不足以形成差异判断，应先补定位、价格、用户和安全证据。")
+            continue
+        flow_text = _plain_summary(flow.claim) if flow else "缺少可验证点击路径，暂不能证明真实上手链路"
+        pricing_text = _plain_summary(pricing.claim) if pricing else "缺少套餐证据，不能判断商业化门槛"
+        security_text = _plain_summary(security.claim) if security else "安全/隐私证据不足，会阻断团队采购讨论"
+        persona_text = _plain_summary(persona.claim) if persona else "目标用户证据不足，难以判断主攻人群"
+        evidence_ids = []
+        for claim in [flow, pricing, security, persona]:
+            if claim:
+                evidence_ids.extend(claim.supporting_evidence[:1])
+        lines.append(
+            f"- **{product}**：产品叙事应围绕“{flow_text}”；商业化只可说“{pricing_text}”；采购风险看“{security_text}”；主攻人群判断为“{persona_text}”。{_evidence_ref(evidence_ids)}"
+        )
+    return lines
+
+
+def _next_action_lines(state: GraphState, trust: TrustSummary, source_mix: dict[str, float | int | str]) -> list[str]:
+    actions = ["", "## 下一步行动清单"]
+    if trust.unresolved_ticket_count:
+        actions.append("- **先处理阻断项**：逐个关闭未解决 Review Ticket；未补到证据的内容继续留在不确定性章节，不能写成结论。")
+    if float(source_mix["third_party_ratio"]) < THIRD_PARTY_SOURCE_RATIO_TARGET:
+        actions.append("- **补外部样本**：补充第三方评测、社区讨论、客户案例或社媒样本，把第三方来源占比提升到 35% 以上，再用于正式评审。")
+    actions.extend(
+        [
+            "- **补价格深度**：下一轮必须抽取金额、额度、计费单位、试用策略和企业条款，否则不要做价格优劣排序。",
+            "- **补真实用户验证**：围绕报告中的用户旅程设计 5-8 个访谈问题，验证“实测路径”是否真的对应高频任务。",
+            "- **补采购风险**：对安全、隐私、权限、团队管理和数据留存做单独表格，避免把个人开发者体验误判为团队可采购能力。",
+        ]
+    )
+    return actions
+
+
+def _pm_acceptance_lines(state: GraphState, trust: TrustSummary, source_mix: dict[str, float | int | str]) -> list[str]:
+    products = [state.task.config.target_product, *state.task.config.competitors]
+    unresolved = [ticket for ticket in state.review_tickets if ticket.status in {"open", "accepted", "rerun_started"}]
+    resolved = [ticket for ticket in state.review_tickets if ticket.status in {"resolved", "dismissed", "blocked"}]
+    schema_ready = [
+        "User Journey" if any(item.evidence_type in {"feature", "browser_interaction"} for item in state.evidence) else "",
+        "PricingModel" if any(item.evidence_type == "pricing" for item in state.evidence) else "",
+        "UserPersona" if any(item.evidence_type == "target_user" for item in state.evidence) else "",
+        "SWOT",
+    ]
+    schema_ready = [item for item in schema_ready if item]
+    structured_interaction_count = len(
+        [
+            item
+            for item in state.evidence
+            if item.evidence_type == "browser_interaction"
+            and any(source.source_id == item.source_id and source.source_type in {"fixture_walkthrough", "official_fixture_walkthrough"} for source in state.sources)
+        ]
+    )
+    third_party_ratio = float(source_mix["third_party_ratio"])
+    if trust.unresolved_ticket_count or trust.blocked_claim_count:
+        status = "需人工复核"
+        status_note = "仍有未解决或阻断项，不能外部发布。"
+    elif third_party_ratio < THIRD_PARTY_SOURCE_RATIO_TARGET:
+        status = "可进入内部评审"
+        status_note = "主结论可供 PM 评审，但正式发布前需补外部样本。"
+    else:
+        status = "可发布结论"
+        status_note = "来源结构和结论状态已满足正式评审基线。"
+    lines = [
+        "",
+        "## PM 验收检查",
+        f"- 决策状态：{status}；未解决工单 {trust.unresolved_ticket_count} 个，阻断结论 {trust.blocked_claim_count} 个；{status_note}",
+        f"- 效率证据：一次任务覆盖 {len(products)} 个产品、{trust.total_source_count} 个来源、{trust.total_evidence_count} 条证据、{trust.total_claim_count} 条结论和 {len(state.trace)} 条 Agent Trace，可替代人工分散检索后的初稿整理。",
+        f"- 覆盖度证据：官方来源占比 {trust.official_source_ratio:.0%}，第三方来源占比 {third_party_ratio:.0%}，浏览器实测覆盖 {trust.browser_verified_product_count}/{trust.browser_verified_product_total} 个产品，结构化交互路径 {structured_interaction_count} 条。",
+        f"- 一致性证据：已生成 {' / '.join(schema_ready)}；证据绑定率 {trust.claim_evidence_binding_rate:.0%}，所有进入报告的结论必须绑定 Evidence ID。",
+        f"- 人工介入：已处理 Review Ticket {len(resolved)} 个；{'无未解决工单，可进入 PM 内部评审。' if not unresolved else '仍需处理以下工单后再外部发布。'}",
+    ]
+    for ticket in unresolved[:3]:
+        lines.append(f"  - {ticket.product or '全局'} / {ticket.missing_evidence_type or 'unknown'}：{ticket.required_action}")
+    return lines
+
+
 def _evidence_ref(ids: list[str]) -> str:
     return f"（证据：{', '.join(ids)}）" if ids else "（证据待补充）"
 
@@ -2500,6 +3100,28 @@ def _evidence_ref(ids: list[str]) -> str:
 def _plain_summary(text: str) -> str:
     text = " ".join(str(text or "").split())
     text = re.sub(r"\s*Evidence:\s*[\w_, -]+", "", text, flags=re.IGNORECASE).strip()
+    replacements = {
+        "Cursor is positioned as an AI-native code editor": "Cursor 的核心定位是 AI 原生代码编辑器",
+        "Cursor offers individual and team subscription plans": "Cursor 已覆盖个人与团队订阅包装",
+        "Cursor feature coverage centers on editor-native AI, codebase context, and agent workflows": "Cursor 的能力重心在编辑器内 AI、代码库上下文和 Agent 工作流",
+        "Cursor's agent workflow is represented as an editor path from the agent panel through context selection to applying code changes": "Cursor 的结构化路径覆盖 Agent 面板、上下文选择到代码变更应用，适合形成待实测的编辑器内闭环假设",
+        "Cursor targets individual developers and engineering teams adopting AI coding workflows": "Cursor 同时面向个人开发者和正在规模化采用 AI 编程的工程团队",
+        "Cursor publishes security and privacy controls for team or enterprise adoption": "Cursor 已提供团队/企业采用所需的安全与隐私控制材料",
+        "GitHub Copilot workflow is represented as a path from repository context into Copilot chat, agent task handling, and pull request review": "GitHub Copilot 的结构化路径连接仓库上下文、Copilot Chat、Agent 任务和 PR Review",
+        "GitHub Copilot has individual, business, and enterprise plan tiers": "GitHub Copilot 的套餐覆盖个人、商业和企业层级",
+        "GitHub Copilot surfaces enterprise trust and security controls": "GitHub Copilot 已把企业信任与安全控制作为采购叙事的一部分",
+        "GitHub Copilot targets individual developers plus business and enterprise engineering organizations": "GitHub Copilot 同时覆盖个人开发者、商业团队和企业工程组织",
+        "Windsurf's agentic coding workflow is represented as an editor path through Cascade, prompt input, context selection, and suggested code changes": "Windsurf 的结构化路径围绕 Cascade、提示输入、上下文选择和建议变更运行",
+        "Windsurf publishes free and paid plans for individual and team usage": "Windsurf 有免费与付费组合，覆盖个人和团队使用",
+        "Windsurf publishes security and privacy signals for team adoption": "Windsurf 已提供团队采用所需的安全与隐私信号",
+        "Windsurf targets developers and teams seeking AI-assisted coding workflows": "Windsurf 面向希望引入 AI 辅助开发链路的开发者和团队",
+        "Positioning differs across Cursor, GitHub Copilot, Windsurf; this supports a matrix-style comparison rather than a single ranked verdict": "三者定位差异足够明显，应按使用场景矩阵比较，而不是给单一排名",
+        "Feature coverage differs enough to require a user-journey comparison instead of a flat checklist": "功能差异需要落到用户旅程比较，单纯功能清单无法解释真实选择",
+        "Browser-observed workflow paths are available for multiple products, so the feature tree can separate real interaction coverage from source-only feature claims": "多个产品已有结构化路径，可把待实测体验假设和文档推断能力分开评估",
+        "Pricing coverage is strongest where official pricing pages are present; unresolved pricing gaps should be treated as follow-up research rather than final conclusions": "只有官方定价页支撑的商业化判断可进入正文，价格缺口应保留为后续调研",
+    }
+    for source, replacement in replacements.items():
+        text = text.replace(source, replacement)
     return text.rstrip("。.")
 
 
@@ -2540,7 +3162,9 @@ def _source_type_label(source_type: str) -> str:
     if source_type in {"third_party_relevant", "independent_web", "community_forum", "review_site"}:
         return "第三方来源"
     if source_type in {"browser_walkthrough", "official_browser_walkthrough"}:
-        return "实测/衍生证据"
+        return "真实浏览器实测"
+    if source_type in {"fixture_walkthrough", "official_fixture_walkthrough"}:
+        return "结构化交互路径"
     return source_type
 
 
@@ -2567,6 +3191,14 @@ def writer_node(state: GraphState) -> GraphState:
     swot = _build_swot(state, included, uncertain)
     social_insights = state.social_insights
     source_mix = _source_mix_summary(state)
+    structured_interaction_count = len(
+        [
+            item
+            for item in state.evidence
+            if item.evidence_type == "browser_interaction"
+            and any(source.source_id == item.source_id and source.source_type in {"fixture_walkthrough", "official_fixture_walkthrough"} for source in state.sources)
+        ]
+    )
     lines = [
         f"# {state.task.config.target_product} 竞品分析报告",
         "",
@@ -2575,6 +3207,7 @@ def writer_node(state: GraphState) -> GraphState:
         f"- 官方来源占比：{trust.official_source_ratio:.0%}",
         f"- 第三方来源占比：{float(source_mix['third_party_ratio']):.0%}（{int(source_mix['third_party_count'])} / {int(source_mix['total'])} 个可计入来源）",
         f"- 浏览器实测证据：{trust.browser_interaction_count} 条（覆盖 {trust.browser_verified_product_count} / {trust.browser_verified_product_total} 个产品）",
+        f"- 结构化交互路径证据：{structured_interaction_count} 条（用于旅程假设，不等同真实浏览器实测）",
         f"- 已通过结论：{trust.passed_claim_count} / {trust.total_claim_count}",
         f"- 不确定 / 阻断 / 降级结论：{trust.uncertain_claim_count} / {trust.blocked_claim_count} / {trust.downgraded_claim_count}",
         f"- 未解决 Review Ticket：{trust.unresolved_ticket_count}",
@@ -2593,15 +3226,21 @@ def writer_node(state: GraphState) -> GraphState:
         f"- 报告受众：{state.task.config.audience}",
         f"- 证据严格度：{state.task.config.evidence_strictness}",
         f"- 来源结构判断：{source_mix['note']}",
-        "",
-        "## 核心结论",
     ]
     comparative_claims = [claim for claim in included if claim.claim_type.startswith("comparative")]
     opportunity_claims = [claim for claim in included if claim.claim_type == "opportunity"]
-    product_claims = [claim for claim in included if claim not in comparative_claims and claim not in opportunity_claims]
-    core_claims = product_claims[:6] + comparative_claims[:2] + opportunity_claims[:2]
-    for claim in core_claims:
-        lines.append(f"- {_claim_narrative(claim)}")
+    lines.extend(_pm_decision_page_lines(state, included, trust, source_mix, pricing_model))
+    lines.extend(_decision_summary_lines(state, included, trust, source_mix))
+    lines.extend(_differentiated_insight_lines(state, included))
+    lines.extend(["", "## 核心结论"])
+    if comparative_claims:
+        for claim in comparative_claims[:3]:
+            lines.append(f"- {_claim_narrative(claim)}")
+    if opportunity_claims:
+        for claim in opportunity_claims[:2]:
+            lines.append(f"- {_claim_narrative(claim)}")
+    if not comparative_claims and not opportunity_claims:
+        lines.append("- 当前证据更适合先形成产品事实底稿；还需要补充竞品间可比证据后再输出排序或优先级判断。")
     lines.extend(["", "## 产品定位与能力矩阵"])
     products = [state.task.config.target_product, *state.task.config.competitors]
     claim_types = ["positioning", "agent_capability", "pricing"]
@@ -2617,7 +3256,13 @@ def writer_node(state: GraphState) -> GraphState:
     lines.extend(["", "## 定价模型 PricingModel"])
     for plan in pricing_model.plans:
         tier_text = " / ".join(plan.tiers) if plan.tiers else "未覆盖"
-        lines.append(f"- **{plan.product}**：当前可确认的收费结构是 {plan.model}，层级信号为 {tier_text}；{_plain_summary(plan.monetization_signal)}。置信度：{plan.confidence}；{_evidence_ref(plan.evidence_ids)}")
+        price_text = " / ".join(plan.price_points) if plan.price_points else "未抽取到公开金额"
+        limit_text = " / ".join(plan.usage_limits) if plan.usage_limits else "未抽取到额度限制"
+        gap_text = " / ".join(plan.data_gaps) if plan.data_gaps else "无明显结构缺口"
+        lines.append(
+            f"- **{plan.product}**：收费结构 {plan.model}；层级信号 {tier_text}；金额 {price_text}；计费单位 {plan.billing_unit or '未抽取'}；额度 {limit_text}；试用/免费 {plan.trial_or_free or '未明确'}；企业条款 {plan.enterprise_terms or '未明确'}。置信度：{plan.confidence}；{_evidence_ref(plan.evidence_ids)}"
+        )
+        lines.append(f"  - 缺口：{gap_text}；商业化判断：{_plain_summary(plan.monetization_signal)}。")
         if plan.risk:
             lines.append(f"  - 风险：{plan.risk}")
     lines.append(f"- 对比摘要：{pricing_model.comparison_summary}")
@@ -2649,26 +3294,28 @@ def writer_node(state: GraphState) -> GraphState:
                 lines.append(f"  - {_evidence_ref(insight.evidence_ids)}")
         else:
             lines.append("- 已启用社媒舆情，但当前没有可用采集结果；请检查小红书 MCP 登录状态或粘贴点点 AI 总结。")
-            social_tickets = [
-                ticket
-                for ticket in state.review_tickets
-                if ticket.missing_evidence_type == "social_sentiment" or ticket.preferred_source_type.startswith("social_")
-            ]
-            seen_social_reasons: set[str] = set()
-            for ticket in social_tickets[:3]:
-                reason = " ".join(str(ticket.reason or "").split())
-                action = " ".join(str(ticket.required_action or "").split())
-                message = f"{reason} 建议：{action}".strip()
-                if not message or message in seen_social_reasons:
-                    continue
-                seen_social_reasons.add(message)
-                lines.append(f"- 当前阻断：{message}")
+        social_tickets = [
+            ticket
+            for ticket in state.review_tickets
+            if ticket.missing_evidence_type == "social_sentiment" or ticket.preferred_source_type.startswith("social_")
+        ]
+        seen_social_reasons: set[str] = set()
+        for ticket in social_tickets[:3]:
+            reason = " ".join(str(ticket.reason or "").split())
+            action = " ".join(str(ticket.required_action or "").split())
+            message = f"{reason} 建议：{action}".strip()
+            if not message or message in seen_social_reasons:
+                continue
+            seen_social_reasons.add(message)
+            lines.append(f"- 当前阻断：{message}")
+    lines.extend(_pm_acceptance_lines(state, trust, source_mix))
     lines.extend(["", "## 机会点建议"])
     if opportunity_claims:
         for claim in opportunity_claims:
             lines.append(f"- {_claim_narrative(claim)}")
     else:
         lines.append("- 保持未覆盖证据为后续调研清单，不把缺失信息写成确定结论。")
+    lines.extend(_next_action_lines(state, trust, source_mix))
     lines.extend(["", "## 不确定性与被阻断结论"])
     for claim in uncertain[:8]:
         lines.append(f"- **{claim.product} / {claim.claim_type}**：{claim.note or claim.claim}")
@@ -2792,7 +3439,7 @@ def _enhance_report_with_llm(state: GraphState, markdown: str, included: list[Cl
         status = "success"
         summary = "LLM request failed; MockLLMProvider generated fallback report enhancement."
 
-    enhancement = _format_report_enhancement(response)
+    enhancement = _format_report_enhancement(response, included)
     token_count = _provider_token_count(response, _estimate_tokens(payload, response))
     provider_request_id = _provider_request_id(response, provider_name)
     if not enhancement:
@@ -2844,7 +3491,7 @@ def _enhance_report_with_llm(state: GraphState, markdown: str, included: list[Cl
             status=status,
             results_summary=summary,
             input_summary=f"Prompt report_enhancement with {len(included)} included claim(s).",
-            output_summary="Report enhancement sections appended.",
+            output_summary="Report enhancement sections inserted before decision analysis.",
             token_count=token_count,
             latency_ms=latency_ms,
             provider_request_id=provider_request_id,
@@ -2859,7 +3506,7 @@ def _enhance_report_with_llm(state: GraphState, markdown: str, included: list[Cl
         "llm_enhancement_applied",
         summary,
         input_summary=f"Prompt report_enhancement with {len(included)} included claim(s).",
-        output_summary="Report enhancement sections appended.",
+        output_summary="Report enhancement sections inserted before decision analysis.",
         prompt_name="report_enhancement",
         prompt=AUDIT_PROMPTS["report_enhancement"],
         input_payload=payload,
@@ -2870,6 +3517,13 @@ def _enhance_report_with_llm(state: GraphState, markdown: str, included: list[Cl
         provider_request_id=provider_request_id,
         skill_fields=skill_fields,
     )
+    return _insert_report_enhancement(markdown, enhancement)
+
+
+def _insert_report_enhancement(markdown: str, enhancement: str) -> str:
+    marker = "\n## PM 决策页"
+    if marker in markdown:
+        return markdown.replace(marker, f"\n\n{enhancement}{marker}", 1)
     return f"{markdown}\n\n{enhancement}"
 
 
@@ -2890,6 +3544,8 @@ def _report_enhancement_payload(state: GraphState, included: list[Claim], uncert
             "Paraphrase evidence into plain-language analysis; do not paste source wording in the body.",
             "Use original wording only in the Resources section and keep excerpts short and cleaned.",
             "Call out third-party support separately from official vendor claims.",
+            "Every executive_summary and strategic_recommendations item must include claim_ids or evidence_ids from included_claims.",
+            "Unbound synthesis must be returned as caveats, not as a factual conclusion.",
         ],
         "included_claims": [
             {
@@ -2897,6 +3553,7 @@ def _report_enhancement_payload(state: GraphState, included: list[Claim], uncert
                 "product": claim.product,
                 "claim_type": claim.claim_type,
                 "claim": claim.claim,
+                "supporting_evidence": claim.supporting_evidence,
                 "supporting_evidence_count": len(claim.supporting_evidence),
             }
             for claim in included[:12]
@@ -2923,10 +3580,11 @@ def _report_enhancement_payload(state: GraphState, included: list[Claim], uncert
     }
 
 
-def _format_report_enhancement(response: dict) -> str:
-    executive_summary = _string_list(response.get("executive_summary"))
-    recommendations = _string_list(response.get("strategic_recommendations"))
+def _format_report_enhancement(response: dict, included: list[Claim]) -> str:
+    executive_summary, unbound_summary = _bound_enhancement_items(response.get("executive_summary"), included)
+    recommendations, unbound_recommendations = _bound_enhancement_items(response.get("strategic_recommendations"), included)
     caveats = _string_list(response.get("caveats"))
+    caveats.extend(f"未绑定证据，需复核：{item}" for item in [*unbound_summary, *unbound_recommendations])
     if not executive_summary and not recommendations and not caveats:
         return ""
     lines = ["## 结构化综合摘要"]
@@ -2941,6 +3599,51 @@ def _format_report_enhancement(response: dict) -> str:
     return "\n".join(lines)
 
 
+def _bound_enhancement_items(value, included: list[Claim]) -> tuple[list[str], list[str]]:
+    if not isinstance(value, list):
+        return [], []
+    claim_by_id = {claim.claim_id: claim for claim in included if claim.supporting_evidence}
+    evidence_to_claim = {
+        evidence_id: claim
+        for claim in included
+        for evidence_id in claim.supporting_evidence
+    }
+    bound: list[str] = []
+    unbound: list[str] = []
+    for raw in value[:8]:
+        text = ""
+        claim_ids: list[str] = []
+        evidence_ids: list[str] = []
+        if isinstance(raw, dict):
+            text = str(raw.get("text") or raw.get("summary") or raw.get("recommendation") or "").strip()
+            claim_ids = [str(item).strip() for item in raw.get("claim_ids", []) if str(item).strip()]
+            evidence_ids = [str(item).strip() for item in raw.get("evidence_ids", []) if str(item).strip()]
+        else:
+            text = str(raw).strip()
+            claim_ids = []
+            evidence_ids = []
+
+        valid_claim_ids = [claim_id for claim_id in claim_ids if claim_id in claim_by_id]
+        valid_evidence_ids = [
+            evidence_id
+            for evidence_id in evidence_ids
+            if evidence_id in evidence_to_claim
+            and (not valid_claim_ids or evidence_to_claim[evidence_id].claim_id in valid_claim_ids)
+        ]
+        if not text:
+            continue
+        if not valid_claim_ids and not valid_evidence_ids:
+            unbound.append(text)
+            continue
+        if not valid_claim_ids:
+            valid_claim_ids = sorted({evidence_to_claim[evidence_id].claim_id for evidence_id in valid_evidence_ids})
+        if not valid_evidence_ids:
+            valid_evidence_ids = [evidence_id for claim_id in valid_claim_ids for evidence_id in claim_by_id[claim_id].supporting_evidence[:2]]
+        refs = f"（依据：{', '.join(valid_claim_ids[:3])}；证据：{', '.join(valid_evidence_ids[:4])}）"
+        bound.append(f"{text}{refs}")
+    return bound, unbound
+
+
 def _string_list(value) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -2951,6 +3654,12 @@ def _build_report_sections(markdown: str, claims: list[Claim]) -> list[ReportSec
     section_titles: dict[str, str] = {
         "可信度摘要": "trust_summary",
         "分析背景": "background",
+        "结构化综合摘要": "structured_summary",
+        "结构化建议": "structured_recommendations",
+        "结构化注意事项": "structured_caveats",
+        "PM 决策页": "pm_decision_page",
+        "决策摘要": "decision_summary",
+        "关键差异洞察": "differentiated_insights",
         "核心结论": "core_findings",
         "产品定位与能力矩阵": "comparison_matrix",
         "用户旅程 User Journey": "feature_tree",
@@ -2958,7 +3667,9 @@ def _build_report_sections(markdown: str, claims: list[Claim]) -> list[ReportSec
         "用户画像 UserPersona": "user_persona",
         "SWOT": "swot",
         "社媒舆情洞察": "social_listening",
+        "PM 验收检查": "pm_acceptance",
         "机会点建议": "opportunities",
+        "下一步行动清单": "next_actions",
         "不确定性与被阻断结论": "uncertainty",
         "数据来源": "sources",
         "数据来源（Resources）": "sources",
@@ -2966,13 +3677,18 @@ def _build_report_sections(markdown: str, claims: list[Claim]) -> list[ReportSec
     }
     section_claims: dict[str, list[str]] = {
         "core_findings": [claim.claim_id for claim in claims if claim.included_in_report and claim.verified_status == "passed"],
+        "pm_decision_page": [claim.claim_id for claim in claims],
+        "decision_summary": [claim.claim_id for claim in claims if claim.included_in_report and claim.verified_status == "passed"],
+        "differentiated_insights": [claim.claim_id for claim in claims if claim.included_in_report and claim.verified_status == "passed"],
         "comparison_matrix": [claim.claim_id for claim in claims if claim.claim_type in {"positioning", "agent_capability", "pricing", "feature", "target_user", "security", "third_party_context"}],
         "feature_tree": [claim.claim_id for claim in claims if claim.claim_type in {"feature", "agent_capability", "security", "comparative_feature"}],
         "pricing_model": [claim.claim_id for claim in claims if claim.claim_type == "pricing"],
         "user_persona": [claim.claim_id for claim in claims if claim.claim_type == "target_user"],
         "swot": [claim.claim_id for claim in claims if claim.included_in_report or claim.verified_status != "passed"],
         "social_listening": [claim.claim_id for claim in claims if claim.claim_type == "social_sentiment"],
+        "pm_acceptance": [claim.claim_id for claim in claims],
         "opportunities": [claim.claim_id for claim in claims if claim.claim_type == "opportunity"],
+        "next_actions": [claim.claim_id for claim in claims if claim.included_in_report and claim.verified_status == "passed"],
         "uncertainty": [claim.claim_id for claim in claims if claim.verified_status != "passed"],
     }
     sections: list[ReportSection] = []
@@ -3059,6 +3775,7 @@ def _semantic_downgrade_reason(claim: Claim, evidence: list[Evidence], source_by
         "agent_capability",
         "social_sentiment",
         "third_party_context",
+        "contradiction",
     }
     if claim.claim_type in comparable_types:
         mismatched_type = [item.evidence_id for item in evidence if item.evidence_type != claim.claim_type]
@@ -3125,7 +3842,7 @@ def _is_relevant_non_official_source(evidence: Evidence, source_by_id: dict[str,
 
 
 def _is_source_mix_counted(source: Source) -> bool:
-    return source.source_type not in {"browser_walkthrough", "official_browser_walkthrough"}
+    return source.source_type not in {"browser_walkthrough", "official_browser_walkthrough", "fixture_walkthrough", "official_fixture_walkthrough"}
 
 
 def _is_third_party_source(source: Source) -> bool:
@@ -3163,7 +3880,14 @@ def _build_trust_summary(state: GraphState) -> TrustSummary:
     bound_claims = len([claim for claim in state.claims if claim.supporting_evidence])
     official_sources = len([source for source in state.sources if source.source_type.startswith("official")])
     products = [state.task.config.target_product, *state.task.config.competitors]
-    browser_interactions = [item for item in state.evidence if item.evidence_type == "browser_interaction" and item.status == "active"]
+    source_by_id = {source.source_id: source for source in state.sources}
+    browser_interactions = [
+        item
+        for item in state.evidence
+        if item.evidence_type == "browser_interaction"
+        and item.status == "active"
+        and _is_real_browser_walkthrough_source(source_by_id.get(item.source_id))
+    ]
     browser_verified_products = {item.product for item in browser_interactions}
     unresolved_tickets = len([ticket for ticket in state.review_tickets if ticket.status in {"open", "accepted", "rerun_started"}])
     blocked_claims = len([claim for claim in state.claims if claim.verified_status == "blocked"])

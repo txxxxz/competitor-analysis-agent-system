@@ -185,6 +185,11 @@ def _ticket_response(ticket):
         "rerun_count": ticket.rerun_count,
         "max_reruns": ticket.max_reruns,
         "resolution_summary": ticket.resolution_summary or ticket.resolution_note,
+        "before_evidence_ids": ticket.before_evidence_ids,
+        "added_evidence_ids": ticket.added_evidence_ids,
+        "improved_claim_ids": ticket.improved_claim_ids,
+        "before_claim_statuses": ticket.before_claim_statuses,
+        "after_claim_statuses": ticket.after_claim_statuses,
         "resolved_at": ticket.resolved_at,
     }
 
@@ -1245,6 +1250,8 @@ async def rerun_review_ticket_v1(ticket_id: str, request: Request):
     if not result:
         return problem_response(404, "Not Found", "Review Ticket not found.")
     ticket = next(item for item in result.review_tickets if item.ticket_id == ticket_id)
+    if ticket.status in {"resolved", "dismissed", "blocked"}:
+        return problem_response(409, "Conflict", f"Ticket is already {ticket.status}; reopen it before running a new evidence-improvement rerun.")
     if ticket.rerun_count >= ticket.max_reruns:
         ticket.status = "blocked"
         ticket.resolution_summary = "Review Ticket reached the maximum rerun count and requires manual intervention."

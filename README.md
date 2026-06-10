@@ -29,7 +29,9 @@
 - Critic Agent 到 Research Agent 的 Review Ticket 闭环。
 - Review Ticket 覆盖 pricing、feature、target_user、security、contradiction 缺口。
 - 证据/结论绑定，以及无支撑结论降级。
-- 报告结构化输出：User Journey（兼容 FeatureTree schema）、PricingModel、UserPersona、SWOT。
+- 报告结构化输出：PM 决策页、User Journey（兼容 FeatureTree schema）、PricingModel、UserPersona、SWOT。
+- PricingModel 会列出金额、计费单位、额度限制、试用/免费、企业条款和 data gaps；缺字段时只支持包装策略判断，不输出价格高低结论。
+- Demo 中的结构化交互路径会标为 `fixture_walkthrough`，不计入真实 `browser_walkthrough` 覆盖。
 - Agent Trace 记录 prompt/input/output/token/latency/provider/request id 字段。
 - Demo fixture run 与 Live provider run 在 Trust Summary、ToolCall、Trace 中明确标注。
 - DeepSeek LLM provider：支持 `claim_enrichment`、`review_ticket_suggestions`、`report_enhancement` 和查询竞品目标 AI 润色。
