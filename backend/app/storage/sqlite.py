@@ -26,8 +26,9 @@ class StoredSetting:
 
 
 class SQLiteStore:
-    def __init__(self, db_path: str = "data/app.db") -> None:
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: str | None = None) -> None:
+        self.db_path = _resolve_db_path(db_path)
+        self.secret_path = self.db_path.with_name(".app_settings.key")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init()
 
@@ -192,7 +193,7 @@ class SQLiteStore:
         for row in rows:
             raw_value = row["value"]
             encrypted = bool(row["encrypted"])
-            value = decrypt_setting(raw_value) if encrypted else raw_value
+            value = decrypt_setting(raw_value, self.secret_path) if encrypted else raw_value
             settings[row["key"]] = StoredSetting(
                 key=row["key"],
                 value=value,
@@ -211,7 +212,7 @@ class SQLiteStore:
                     VALUES (?, ?, 1, ?, ?)
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, encrypted = 1, updated_at = excluded.updated_at
                     """,
-                    (key, encrypt_setting(value), timestamp, timestamp),
+                    (key, encrypt_setting(value, self.secret_path), timestamp, timestamp),
                 )
         return self.get_app_settings()
 
@@ -318,11 +319,11 @@ class SQLiteStore:
         ]
 
 
-def encrypt_setting(value: str) -> str:
+def encrypt_setting(value: str, secret_path: Path | None = None) -> str:
     plaintext = str(value or "").encode("utf-8")
     salt = token_bytes(16)
     nonce = token_bytes(16)
-    key = _derive_settings_key(salt)
+    key = _derive_settings_key(salt, secret_path)
     ciphertext = _xor_stream(plaintext, key, nonce)
     body = b"v1" + salt + nonce + ciphertext
     signature = hmac.new(key, body, hashlib.sha256).digest()
@@ -347,7 +348,7 @@ def _pm_skill_from_row(row: sqlite3.Row) -> PMSkill:
     )
 
 
-def decrypt_setting(value: str) -> str:
+def decrypt_setting(value: str, secret_path: Path | None = None) -> str:
     try:
         payload = base64.urlsafe_b64decode(value.encode("ascii"))
         if len(payload) < 2 + 16 + 16 + 32 or payload[:2] != b"v1":
@@ -356,7 +357,7 @@ def decrypt_setting(value: str) -> str:
         nonce = payload[18:34]
         ciphertext = payload[34:-32]
         signature = payload[-32:]
-        key = _derive_settings_key(salt)
+        key = _derive_settings_key(salt, secret_path)
         expected = hmac.new(key, payload[:-32], hashlib.sha256).digest()
         if not hmac.compare_digest(signature, expected):
             raise ValueError("Encrypted setting signature mismatch.")
@@ -365,13 +366,29 @@ def decrypt_setting(value: str) -> str:
         raise SettingsEncryptionError("Unable to decrypt stored application setting.") from exc
 
 
-def _derive_settings_key(salt: bytes) -> bytes:
-    secret = os.getenv("APP_SETTINGS_SECRET") or _read_or_create_local_secret()
+def _derive_settings_key(salt: bytes, secret_path: Path | None = None) -> bytes:
+    secret = os.getenv("APP_SETTINGS_SECRET") or _read_or_create_local_secret(secret_path)
     return hashlib.pbkdf2_hmac("sha256", secret.encode("utf-8"), salt, 200_000, dklen=32)
 
 
-def _read_or_create_local_secret() -> str:
-    key_path = Path("data/.app_settings.key")
+def _resolve_db_path(db_path: str | None) -> Path:
+    if db_path:
+        if db_path.startswith("sqlite:///"):
+            return Path(db_path.removeprefix("sqlite:///"))
+        return Path(db_path)
+
+    env_database_url = os.getenv("DATABASE_URL", "").strip()
+    if env_database_url.startswith("sqlite:///"):
+        return Path(env_database_url.removeprefix("sqlite:///"))
+
+    if os.getenv("VERCEL") or os.getenv("VERCEL_ENV") or os.getenv("NOW_REGION"):
+        return Path("/tmp/app.db")
+
+    return Path("data/app.db")
+
+
+def _read_or_create_local_secret(secret_path: Path | None = None) -> str:
+    key_path = secret_path or _resolve_db_path(None).with_name(".app_settings.key")
     if key_path.exists():
         return key_path.read_text(encoding="utf-8").strip()
     key_path.parent.mkdir(parents=True, exist_ok=True)
