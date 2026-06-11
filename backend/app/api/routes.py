@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+from queue import Empty, Queue
+from threading import Thread
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -627,6 +629,47 @@ def _sse_message(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _streaming_workflow_response(task: Task) -> StreamingResponse:
+    def event_generator():
+        task.status = "running"
+        final_result = None
+        events: Queue[dict | None] = Queue()
+
+        def worker():
+            try:
+                for event in stream_workflow(task):
+                    events.put(event)
+                events.put(None)
+            except Exception as exc:
+                task.status = "failed"
+                events.put({"event": "workflow_error", "data": {"task_id": task.task_id, "message": str(exc)}})
+                events.put(None)
+
+        Thread(target=worker, daemon=True).start()
+        while True:
+            try:
+                event = events.get(timeout=10)
+            except Empty:
+                yield _sse_message("heartbeat", {"task_id": task.task_id, "status": "running"})
+                continue
+            if event is None:
+                break
+            if event["event"] == "result":
+                final_result = WorkflowResult.model_validate(event["data"])
+            yield _sse_message(event["event"], event["data"])
+        if final_result:
+            try:
+                store.save_result(final_result)
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/tasks")
 def list_tasks(include_fixture: bool = False):
     tasks = store.list_tasks()
@@ -1072,29 +1115,7 @@ async def stream_task_run_from_config_v1(request: Request):
     provider_status = _provider_status()
     if not provider_status["workflow_ready"]:
         return problem_response(503, "Provider Not Ready", " ".join(provider_status["issues"]))
-
-    def event_generator():
-        task.status = "running"
-        final_result = None
-        try:
-            for event in stream_workflow(task):
-                if event["event"] == "result":
-                    final_result = WorkflowResult.model_validate(event["data"])
-                yield _sse_message(event["event"], event["data"])
-            if final_result:
-                try:
-                    store.save_result(final_result)
-                except Exception:
-                    pass
-        except Exception as exc:
-            task.status = "failed"
-            yield _sse_message("workflow_error", {"task_id": task.task_id, "message": str(exc)})
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return _streaming_workflow_response(task)
 
 
 @router.get("/tasks/{task_id}")
@@ -1130,26 +1151,7 @@ def stream_task_run_v1(task_id: str):
     provider_status = _provider_status()
     if not provider_status["workflow_ready"]:
         return problem_response(503, "Provider Not Ready", " ".join(provider_status["issues"]))
-
-    def event_generator():
-        task.status = "running"
-        final_result = None
-        try:
-            for event in stream_workflow(task):
-                if event["event"] == "result":
-                    final_result = WorkflowResult.model_validate(event["data"])
-                yield _sse_message(event["event"], event["data"])
-            if final_result:
-                store.save_result(final_result)
-        except Exception as exc:
-            task.status = "failed"
-            yield _sse_message("workflow_error", {"task_id": task_id, "message": str(exc)})
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    return _streaming_workflow_response(task)
 
 
 @router.get("/tasks/{task_id}/trace")
