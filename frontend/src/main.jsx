@@ -31,7 +31,6 @@ import {
   acceptReviewTicket,
   checkXhsQrCodeStatus,
   condenseAnalysisGoals,
-  createTaskV1,
   dismissReviewTicket,
   downgradeReviewTicket,
   excludeEvidence,
@@ -52,7 +51,7 @@ import {
   rerunReviewTicket,
   resolveReviewTicket,
   restoreEvidence,
-  streamTaskRun,
+  streamTaskRunFromConfig,
   updateAppSettings,
   updateSkillAssignments,
 } from "./api/client";
@@ -495,8 +494,7 @@ function App() {
     setStreamState(null);
     setActiveView("result");
     try {
-      const task = await createTaskV1(formToConfig(taskForm));
-      const workflowResult = await streamTaskRun(task.task_id, {
+      const workflowResult = await streamTaskRunFromConfig(formToConfig(taskForm), {
         onTrace: (event) => setLiveTrace((current) => [...current, event]),
         onState: (state) => setStreamState(state),
         onResult: (nextResult) => setResult(nextResult),

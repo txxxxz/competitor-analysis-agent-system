@@ -902,6 +902,56 @@ def test_v1_create_task_blocks_target_in_competitors(tmp_path, monkeypatch):
     ]
 
 
+def test_v1_stream_task_run_from_config_returns_sse(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api import routes
+    from app.main import app
+    from app.storage.sqlite import SQLiteStore
+
+    monkeypatch.setattr(routes, "store", SQLiteStore(str(tmp_path / "app.db")))
+    monkeypatch.setattr(
+        routes,
+        "_provider_status",
+        lambda: {
+            "workflow_ready": True,
+            "search": {"ready": True, "provider": "mock"},
+            "llm": {"ready": True, "provider": "mock"},
+            "lightweight_llm": {"ready": True, "provider": "mock"},
+            "fallback_enabled": False,
+            "issues": [],
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "stream_workflow",
+        lambda task: iter(
+            [
+                {"event": "workflow_started", "data": {"task_id": task.task_id}},
+                {"event": "workflow_completed", "data": {"task_id": task.task_id}},
+            ]
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/tasks/run/stream",
+        json={
+            "product_domain": "ai_tools",
+            "target_product": "Cursor",
+            "competitors": ["GitHub Copilot"],
+            "analysis_goals": ["positioning"],
+            "report_depth": "brief",
+            "evidence_strictness": "high",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: workflow_started" in response.text
+    assert "event: workflow_completed" in response.text
+
+
 def test_v1_exclude_and_restore_evidence_marks_dependents_stale(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 

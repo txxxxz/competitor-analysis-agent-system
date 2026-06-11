@@ -192,6 +192,66 @@ export function streamTaskRun(taskId, handlers = {}) {
   });
 }
 
+export async function streamTaskRunFromConfig(config, handlers = {}) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE}/api/v1/tasks/run/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    });
+  } catch (err) {
+    throw new Error(`无法连接后端 API（${API_BASE}）：${err.message || "网络请求失败"}`);
+  }
+  if (!response.ok) {
+    throw new Error(await formatError(response));
+  }
+  if (!response.body) {
+    throw new Error("Streaming run response has no body.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResult = null;
+
+  function consume(rawEvent) {
+    const lines = rawEvent.split(/\r?\n/);
+    let eventName = "message";
+    const dataLines = [];
+    for (const line of lines) {
+      if (line.startsWith("event:")) eventName = line.slice(6).trim();
+      if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+    }
+    if (!dataLines.length) return;
+    const data = JSON.parse(dataLines.join("\n"));
+    if (eventName === "workflow_started") handlers.onStart?.(data);
+    if (eventName === "state") handlers.onState?.(data);
+    if (eventName === "trace") handlers.onTrace?.(data);
+    if (eventName === "result") {
+      finalResult = data;
+      handlers.onResult?.(data);
+    }
+    if (eventName === "workflow_completed") handlers.onDone?.(data);
+    if (eventName === "workflow_error") {
+      throw new Error(data.message || "Streaming run failed.");
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const events = buffer.split(/\n\n/);
+    buffer = events.pop() || "";
+    for (const rawEvent of events) {
+      consume(rawEvent);
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) consume(buffer);
+  return finalResult;
+}
+
 export function getTasks() {
   return request("/api/tasks");
 }

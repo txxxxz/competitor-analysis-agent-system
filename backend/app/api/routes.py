@@ -141,6 +141,29 @@ def _validation_errors_from_exception(error: ValidationError) -> list[dict[str, 
     return errors
 
 
+def _task_from_v1_payload(payload: dict) -> Task | JSONResponse:
+    adapted = _adapt_v1_task_config(payload)
+    contract_errors = validate_task_config_fields(SimpleNamespace(**adapted))
+    if contract_errors:
+        return problem_response(
+            422,
+            "Validation Error",
+            "Task config validation failed.",
+            contract_errors,
+        )
+
+    try:
+        config = TaskConfig(**adapted)
+    except ValidationError as exc:
+        return problem_response(
+            422,
+            "Validation Error",
+            "Task config validation failed.",
+            _validation_errors_from_exception(exc),
+        )
+    return Task(config=config)
+
+
 def _mark_evidence_dependents_stale(result: WorkflowResult, evidence_id: str, reason: str) -> tuple[list[str], str]:
     stale_claims: list[str] = []
     for claim in result.claims:
@@ -1018,43 +1041,59 @@ def generate_user_research_survey(payload: SurveyGenerationRequest):
 @router.post("/v1/tasks", status_code=status.HTTP_201_CREATED)
 async def create_task_v1(request: Request):
     payload = await request.json()
-    adapted = _adapt_v1_task_config(payload)
-    contract_errors = validate_task_config_fields(SimpleNamespace(**adapted))
-    if contract_errors:
-        return problem_response(
-            422,
-            "Validation Error",
-            "Task config validation failed.",
-            contract_errors,
-        )
-
-    try:
-        config = TaskConfig(**adapted)
-    except ValidationError as exc:
-        return problem_response(
-            422,
-            "Validation Error",
-            "Task config validation failed.",
-            _validation_errors_from_exception(exc),
-        )
-
-    task = Task(config=config)
+    task = _task_from_v1_payload(payload)
+    if isinstance(task, JSONResponse):
+        return task
     store.create_task(task)
     return api_response(
         {
             "task_id": task.task_id,
             "status": "draft",
             "task_config": {
-                "product_domain": "generic" if config.domain == "general_product" else config.domain,
-                "target_product": config.target_product,
-                "competitors": config.competitors,
-                "analysis_goals": config.analysis_goals,
-                "report_depth": "brief" if config.depth == "quick" else config.depth,
-                "evidence_strictness": config.evidence_strictness,
-                "output_audience": config.audience,
-                "natural_language_notes": config.notes,
+                "product_domain": "generic" if task.config.domain == "general_product" else task.config.domain,
+                "target_product": task.config.target_product,
+                "competitors": task.config.competitors,
+                "analysis_goals": task.config.analysis_goals,
+                "report_depth": "brief" if task.config.depth == "quick" else task.config.depth,
+                "evidence_strictness": task.config.evidence_strictness,
+                "output_audience": task.config.audience,
+                "natural_language_notes": task.config.notes,
             },
         }
+    )
+
+
+@router.post("/v1/tasks/run/stream")
+async def stream_task_run_from_config_v1(request: Request):
+    payload = await request.json()
+    task = _task_from_v1_payload(payload)
+    if isinstance(task, JSONResponse):
+        return task
+    provider_status = _provider_status()
+    if not provider_status["workflow_ready"]:
+        return problem_response(503, "Provider Not Ready", " ".join(provider_status["issues"]))
+
+    def event_generator():
+        task.status = "running"
+        final_result = None
+        try:
+            for event in stream_workflow(task):
+                if event["event"] == "result":
+                    final_result = WorkflowResult.model_validate(event["data"])
+                yield _sse_message(event["event"], event["data"])
+            if final_result:
+                try:
+                    store.save_result(final_result)
+                except Exception:
+                    pass
+        except Exception as exc:
+            task.status = "failed"
+            yield _sse_message("workflow_error", {"task_id": task.task_id, "message": str(exc)})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
