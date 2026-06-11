@@ -73,21 +73,21 @@ SETTING_KEYS = {
     "DEEPSEEK_API_KEY",
     "DEEPSEEK_BASE_URL",
     "DEEPSEEK_MODEL",
-    "SEED_API_KEY",
-    "SEED_BASE_URL",
-    "SEED_MODEL",
     "LIGHTWEIGHT_LLM_PROVIDER",
-    "LIGHTWEIGHT_SEED_API_KEY",
-    "LIGHTWEIGHT_SEED_BASE_URL",
-    "LIGHTWEIGHT_SEED_MODEL",
     "ALLOW_PROVIDER_FALLBACK",
     "ALLOW_EMPTY_SEARCH_FALLBACK",
 }
 SECRET_SETTING_KEYS = {
     "ANYSEARCH_API_KEY",
     "DEEPSEEK_API_KEY",
+}
+LEGACY_SEED_SETTING_KEYS = {
     "SEED_API_KEY",
+    "SEED_BASE_URL",
+    "SEED_MODEL",
     "LIGHTWEIGHT_SEED_API_KEY",
+    "LIGHTWEIGHT_SEED_BASE_URL",
+    "LIGHTWEIGHT_SEED_MODEL",
 }
 
 
@@ -639,22 +639,14 @@ def _provider_status():
     elif settings.llm_provider == "deepseek" and not settings.deepseek_api_key:
         llm_ready = False
         issues.append("DeepSeek 未配置：请设置 DEEPSEEK_API_KEY。")
-    elif settings.llm_provider == "seed" and not (settings.seed_api_key and settings.seed_base_url and settings.seed_model):
-        llm_ready = False
-        issues.append("Seed LLM 未完整配置：请设置 SEED_API_KEY、SEED_BASE_URL 和 SEED_MODEL。")
-    elif settings.llm_provider not in {"deepseek", "seed"}:
+    elif settings.llm_provider != "deepseek":
         llm_ready = False
         issues.append(f"不支持的 LLM Provider：{settings.llm_provider}。")
 
-    if settings.lightweight_llm_provider == "seed" and not (
-        settings.lightweight_seed_api_key and settings.lightweight_seed_base_url and settings.lightweight_seed_model
-    ):
-        lightweight_llm_ready = False
-        issues.append("轻量 LLM 未完整配置：请设置 LIGHTWEIGHT_SEED_API_KEY、LIGHTWEIGHT_SEED_BASE_URL 和 LIGHTWEIGHT_SEED_MODEL。")
-    elif settings.lightweight_llm_provider == "deepseek" and not settings.deepseek_api_key:
+    if settings.lightweight_llm_provider == "deepseek" and not settings.deepseek_api_key:
         lightweight_llm_ready = False
         issues.append("轻量 LLM 使用 DeepSeek，但 DEEPSEEK_API_KEY 未配置。")
-    elif settings.lightweight_llm_provider not in {"deepseek", "seed", "mock"}:
+    elif settings.lightweight_llm_provider not in {"deepseek", "mock"}:
         lightweight_llm_ready = False
         issues.append(f"不支持的轻量 LLM Provider：{settings.lightweight_llm_provider}。")
 
@@ -678,9 +670,8 @@ def _settings_payload() -> dict:
     api_keys = {
         "ANYSEARCH_API_KEY": bool(settings.anysearch_api_key),
         "DEEPSEEK_API_KEY": bool(settings.deepseek_api_key),
-        "SEED_API_KEY": bool(settings.seed_api_key),
-        "LIGHTWEIGHT_SEED_API_KEY": bool(settings.lightweight_seed_api_key),
     }
+    visible_stored_keys = sorted(key for key in stored.keys() if key not in LEGACY_SEED_SETTING_KEYS)
     return {
         "values": {
             "USE_MOCK_SEARCH": settings.use_mock_search,
@@ -692,17 +683,13 @@ def _settings_payload() -> dict:
             "LLM_PROVIDER": settings.llm_provider,
             "DEEPSEEK_BASE_URL": settings.deepseek_base_url,
             "DEEPSEEK_MODEL": settings.deepseek_model,
-            "SEED_BASE_URL": settings.seed_base_url,
-            "SEED_MODEL": settings.seed_model,
             "LIGHTWEIGHT_LLM_PROVIDER": settings.lightweight_llm_provider,
-            "LIGHTWEIGHT_SEED_BASE_URL": settings.lightweight_seed_base_url,
-            "LIGHTWEIGHT_SEED_MODEL": settings.lightweight_seed_model,
             "ALLOW_PROVIDER_FALLBACK": settings.allow_provider_fallback,
             "ALLOW_EMPTY_SEARCH_FALLBACK": settings.allow_empty_search_fallback,
         },
         "api_keys": api_keys,
-        "stored_keys": sorted(stored.keys()),
-        "encrypted_keys": sorted(key for key, value in stored.items() if value.encrypted),
+        "stored_keys": visible_stored_keys,
+        "encrypted_keys": sorted(key for key, value in stored.items() if value.encrypted and key not in LEGACY_SEED_SETTING_KEYS),
         "provider_status": _provider_status(),
     }
 
