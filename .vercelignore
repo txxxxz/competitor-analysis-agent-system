@@ -1,0 +1,15 @@
+.git
+.vercel
+.pytest_cache
+backend/.pytest_cache
+backend/.venv
+backend/.venv313
+backend/data
+data
+frontend/node_modules
+frontend/dist
+frontend/.vite
+api/__pycache__
+__pycache__
+*.pyc
+.DS_Store
