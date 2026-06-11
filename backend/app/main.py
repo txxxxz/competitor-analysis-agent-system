@@ -46,6 +46,7 @@ def _frontend_root() -> Path | None:
     project_root = Path(__file__).resolve().parents[2]
     candidates = [
         Path(os.getenv("FRONTEND_DIST_DIR", "")) if os.getenv("FRONTEND_DIST_DIR") else None,
+        Path(__file__).resolve().parent / "static",
         project_root / "public",
         project_root / "frontend" / "dist",
     ]
