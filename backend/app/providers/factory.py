@@ -65,14 +65,14 @@ def load_provider_settings() -> ProviderSettings:
         anysearch_base_url=_setting(stored, "ANYSEARCH_BASE_URL", "https://api.anysearch.com/v1/search"),
         anysearch_max_results=_int_setting(stored, "ANYSEARCH_MAX_RESULTS", 15),
         anysearch_content_types=_list_setting(stored, "ANYSEARCH_CONTENT_TYPES"),
-        llm_provider=_setting(stored, "LLM_PROVIDER", "deepseek").strip().lower(),
+        llm_provider=_llm_provider_setting(stored),
         deepseek_api_key=_setting(stored, "DEEPSEEK_API_KEY", ""),
         deepseek_base_url=_setting(stored, "DEEPSEEK_BASE_URL", "https://api.deepseek.com/chat/completions"),
-        deepseek_model=_setting(stored, "DEEPSEEK_MODEL", "deepseek-chat"),
+        deepseek_model=_deepseek_model_setting(stored),
         seed_api_key=_setting(stored, "SEED_API_KEY", ""),
         seed_base_url=_setting(stored, "SEED_BASE_URL", ""),
         seed_model=_setting(stored, "SEED_MODEL", ""),
-        lightweight_llm_provider=_setting(stored, "LIGHTWEIGHT_LLM_PROVIDER", _setting(stored, "LLM_PROVIDER", "deepseek")).strip().lower(),
+        lightweight_llm_provider=_lightweight_llm_provider_setting(stored),
         lightweight_seed_api_key=_setting(stored, "LIGHTWEIGHT_SEED_API_KEY", _setting(stored, "SEED_API_KEY", "")),
         lightweight_seed_base_url=_setting(stored, "LIGHTWEIGHT_SEED_BASE_URL", _setting(stored, "SEED_BASE_URL", "")),
         lightweight_seed_model=_setting(stored, "LIGHTWEIGHT_SEED_MODEL", _setting(stored, "SEED_MODEL", "")),
@@ -216,6 +216,23 @@ def _setting(stored: dict[str, str], name: str, default: str) -> str:
     if value not in (None, ""):
         return value
     return os.getenv(name, default)
+
+
+def _llm_provider_setting(stored: dict[str, str]) -> str:
+    provider = _setting(stored, "LLM_PROVIDER", "deepseek").strip().lower()
+    return "deepseek" if provider != "deepseek" else provider
+
+
+def _lightweight_llm_provider_setting(stored: dict[str, str]) -> str:
+    provider = _setting(stored, "LIGHTWEIGHT_LLM_PROVIDER", _setting(stored, "LLM_PROVIDER", "deepseek")).strip().lower()
+    return provider if provider in {"deepseek", "mock"} else "deepseek"
+
+
+def _deepseek_model_setting(stored: dict[str, str]) -> str:
+    model = _setting(stored, "DEEPSEEK_MODEL", "deepseek-chat").strip()
+    if not model or model == "deepseek-4-flash":
+        return "deepseek-chat"
+    return model
 
 
 def _bool_setting(stored: dict[str, str], name: str, default: bool) -> bool:

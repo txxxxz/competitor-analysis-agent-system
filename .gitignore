@@ -70,3 +70,4 @@ frontend/dist/
 frontend/.vite/
 .playwright-cli/
 .DS_Store
+.vercel

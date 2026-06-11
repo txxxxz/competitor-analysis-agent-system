@@ -1754,6 +1754,8 @@ function settingsFormFromPayload(payload) {
   return {
     ...emptySettingsForm,
     ...values,
+    LLM_PROVIDER: "deepseek",
+    LIGHTWEIGHT_LLM_PROVIDER: "deepseek",
     ANYSEARCH_API_KEY: "",
     DEEPSEEK_API_KEY: "",
     SEED_API_KEY: "",
@@ -1805,9 +1807,7 @@ function SettingsView({
   const update = (patch) => setForm((current) => ({ ...current, ...patch }));
   const isAnySearch = form.SEARCH_PROVIDER === "anysearch";
   const isDeepSeek = form.LLM_PROVIDER === "deepseek";
-  const isSeed = form.LLM_PROVIDER === "seed";
-  const usesSeedLightweight = form.LIGHTWEIGHT_LLM_PROVIDER === "seed";
-  const invalid = !form.SEARCH_PROVIDER || !form.LLM_PROVIDER || (isAnySearch && !form.ANYSEARCH_BASE_URL.trim()) || (isDeepSeek && !form.DEEPSEEK_BASE_URL.trim()) || (isDeepSeek && !form.DEEPSEEK_MODEL.trim()) || (isSeed && (!form.SEED_BASE_URL.trim() || !form.SEED_MODEL.trim())) || (usesSeedLightweight && (!form.LIGHTWEIGHT_SEED_BASE_URL.trim() || !form.LIGHTWEIGHT_SEED_MODEL.trim()));
+  const invalid = !form.SEARCH_PROVIDER || !form.LLM_PROVIDER || (isAnySearch && !form.ANYSEARCH_BASE_URL.trim()) || (isDeepSeek && !form.DEEPSEEK_BASE_URL.trim()) || (isDeepSeek && !form.DEEPSEEK_MODEL.trim());
   const skills = skillCatalog?.skills || [];
   const slots = skillCatalog?.slots || [];
   const selectedSkills = slots
@@ -1882,14 +1882,12 @@ function SettingsView({
               <span>主 LLM 供应商</span>
               <select value={form.LLM_PROVIDER} onChange={(event) => update({ LLM_PROVIDER: event.target.value })}>
                 <option value="deepseek">DeepSeek</option>
-                <option value="seed">Seed</option>
               </select>
             </label>
             <label>
               <span>轻量 LLM</span>
               <select value={form.LIGHTWEIGHT_LLM_PROVIDER} onChange={(event) => update({ LIGHTWEIGHT_LLM_PROVIDER: event.target.value })}>
                 <option value="deepseek">DeepSeek</option>
-                <option value="seed">Seed</option>
                 <option value="mock">Mock</option>
               </select>
             </label>
@@ -1905,36 +1903,6 @@ function SettingsView({
               <input value={form.DEEPSEEK_MODEL} onChange={(event) => update({ DEEPSEEK_MODEL: event.target.value })} />
             </label>
           </div>
-          {(isSeed || usesSeedLightweight) && (
-            <>
-              <SecretField label="Seed API Key" configured={configured.SEED_API_KEY} value={form.SEED_API_KEY} onChange={(value) => update({ SEED_API_KEY: value })} />
-              <div className="form-row">
-                <label>
-                  <span>Seed Base URL</span>
-                  <input value={form.SEED_BASE_URL} onChange={(event) => update({ SEED_BASE_URL: event.target.value })} />
-                </label>
-                <label>
-                  <span>Seed Model</span>
-                  <input value={form.SEED_MODEL} onChange={(event) => update({ SEED_MODEL: event.target.value })} />
-                </label>
-              </div>
-            </>
-          )}
-          {usesSeedLightweight && (
-            <>
-              <SecretField label="轻量 Seed API Key" configured={configured.LIGHTWEIGHT_SEED_API_KEY} value={form.LIGHTWEIGHT_SEED_API_KEY} onChange={(value) => update({ LIGHTWEIGHT_SEED_API_KEY: value })} />
-              <div className="form-row">
-                <label>
-                  <span>轻量 Seed Base URL</span>
-                  <input value={form.LIGHTWEIGHT_SEED_BASE_URL} onChange={(event) => update({ LIGHTWEIGHT_SEED_BASE_URL: event.target.value })} />
-                </label>
-                <label>
-                  <span>轻量 Seed Model</span>
-                  <input value={form.LIGHTWEIGHT_SEED_MODEL} onChange={(event) => update({ LIGHTWEIGHT_SEED_MODEL: event.target.value })} />
-                </label>
-              </div>
-            </>
-          )}
         </section>
       </div>
 

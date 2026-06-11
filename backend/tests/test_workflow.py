@@ -551,6 +551,32 @@ def test_load_provider_settings_defaults_anysearch_max_results_to_15(monkeypatch
     assert settings.anysearch_max_results == 15
 
 
+def test_load_provider_settings_normalizes_llm_to_deepseek(monkeypatch):
+    from app.providers import factory
+
+    monkeypatch.setenv("LLM_PROVIDER", "seed")
+    monkeypatch.setenv("LIGHTWEIGHT_LLM_PROVIDER", "seed")
+    monkeypatch.setattr(factory, "_load_env_files", lambda: None)
+    monkeypatch.setattr(factory, "_stored_provider_settings", lambda: {})
+
+    settings = factory.load_provider_settings()
+
+    assert settings.llm_provider == "deepseek"
+    assert settings.lightweight_llm_provider == "deepseek"
+
+
+def test_load_provider_settings_normalizes_legacy_deepseek_model(monkeypatch):
+    from app.providers import factory
+
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-4-flash")
+    monkeypatch.setattr(factory, "_load_env_files", lambda: None)
+    monkeypatch.setattr(factory, "_stored_provider_settings", lambda: {})
+
+    settings = factory.load_provider_settings()
+
+    assert settings.deepseek_model == "deepseek-chat"
+
+
 def test_duckduckgo_provider_defaults_to_15_results():
     from app.providers.duckduckgo import DuckDuckGoSearchProvider
 
